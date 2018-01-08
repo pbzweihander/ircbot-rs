@@ -5,9 +5,11 @@ extern crate lazy_static;
 extern crate regex;
 
 use irc::client::prelude::*;
+use std::env::args;
 
 fn main() {
-    let server = IrcServer::new("config.toml").unwrap();
+    let server =
+        IrcServer::new(&args().nth(1).unwrap_or_else(|| "config.toml".to_owned())).unwrap();
     server.identify().unwrap();
     server
         .for_each_incoming(|msg| match msg.command {
