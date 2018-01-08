@@ -1,0 +1,9 @@
+nickname = "DicBot"
+alt_nics = ["DicBot_", "DicBot__"]
+username = "DicBot"
+realname = "Dictionary Bot"
+server = ""
+port = 6697
+use_ssl = true
+channels = [""]
+user_info = "Daum Dictionary Search Bot"
