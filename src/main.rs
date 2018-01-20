@@ -124,7 +124,7 @@ fn get_coord_from_place(place: daummap::Place) -> Option<(f32, f32)> {
 
 fn format_pollutant_with_name<'a>(pollutant: &'a airkorea::Pollutant) -> String {
     format!(
-        "{} ({}): {} {}",
+        "{} ({}): {} ({})",
         pollutant.name,
         pollutant.unit,
         (&pollutant.level_by_time)
