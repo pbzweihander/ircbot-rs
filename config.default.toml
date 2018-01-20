@@ -1,9 +1,12 @@
-nickname = "DicBot"
-alt_nics = ["DicBot_", "DicBot__"]
-username = "DicBot"
-realname = "Dictionary Bot"
+nickname = "bot"
+alt_nics = ["bot_", "bot__"]
+username = "bot"
+realname = "IRC bot"
 server = ""
 port = 6697
 use_ssl = true
 channels = [""]
-user_info = "Daum Dictionary Search Bot"
+user_info = "IRC bot"
+
+[options]
+daummap_app_key = "APP_KEY"

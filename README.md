@@ -1,6 +1,9 @@
-# dicbot-rs
+# ircbot-rs
 
-IRC Daum Dictionary search bot written in Rust.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE-APACHE)
+
+Persional IRC bot written in Rust.
 
 ```console
 <@User> d resista
@@ -16,7 +19,3 @@ IRC Daum Dictionary search bot written in Rust.
 <@User> d 加油站
 <DicBot> (중국어사전)  加油站  [jiāyóuzhàn]  주유소
 ```
-
-------
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT) [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE-APACHE)

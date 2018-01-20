@@ -1,5 +1,5 @@
 [package]
-name = "dicbot"
+name = "ircbot"
 version = "0.1.0"
 authors = ["pbzweihander <sd852456@naver.com>"]
 
@@ -8,3 +8,5 @@ irc = "0.12"
 daumdic = "0.2"
 regex = "0.2"
 lazy_static = "1.0"
+daummap = "0.1"
+airkorea = "0.1"
