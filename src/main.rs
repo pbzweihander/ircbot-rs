@@ -134,7 +134,7 @@ fn format_pollutant_with_name<'a>(pollutant: &'a airkorea::Pollutant) -> String 
                 None => String::new(),
             })
             .collect::<Vec<String>>()
-            .join(" -> "),
+            .join(" → "),
         match pollutant.grade {
             airkorea::Grade::None => "",
             airkorea::Grade::Good => "(좋음)",
