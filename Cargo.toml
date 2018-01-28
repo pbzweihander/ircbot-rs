@@ -1,11 +1,11 @@
 [package]
 name = "ircbot"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["pbzweihander <sd852456@naver.com>"]
 
 [dependencies]
 irc = "0.12"
-daumdic = "0.2"
+daumdic = "0.3"
 regex = "0.2"
 lazy_static = "1.0"
 daummap = "0.1"

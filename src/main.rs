@@ -11,15 +11,11 @@ use std::env::args;
 use regex::Regex;
 
 fn main() {
-    let server =
-        IrcServer::new(&args().nth(1).unwrap_or_else(|| "config.toml".to_owned())).unwrap();
+    let config_path = args().nth(1).unwrap_or_else(|| "config.toml".to_owned());
+    let server = IrcServer::new(&config_path).unwrap();
+    let app_key = server.config().get_option("daummap_app_key");
+    let mut config = server.config().clone();
     server.identify().unwrap();
-    let app_key = server
-        .config()
-        .options
-        .as_ref()
-        .and_then(|m| m.get("daummap_app_key"))
-        .unwrap();
     server
         .for_each_incoming(|msg| match msg.command {
             Command::PRIVMSG(channel, message) => {
@@ -31,9 +27,24 @@ fn main() {
                 }
             }
             Command::INVITE(nickname, channel) => {
-                println!("{}, {}", nickname, channel);
                 if nickname == server.current_nickname() {
                     server.send_join(&channel).unwrap();
+                    config.channels.as_mut().unwrap().push(channel);
+                    config.save(&config_path).unwrap();
+                }
+            }
+            Command::KICK(channel, nickname, _) => {
+                if nickname == server.current_nickname() {
+                    if let Some(i) = config
+                        .channels
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .position(|s| s == &channel)
+                    {
+                        config.channels.as_mut().unwrap().remove(i);
+                        config.save(&config_path).unwrap();
+                    }
                 }
             }
             _ => (),
@@ -42,22 +53,33 @@ fn main() {
 }
 
 fn dic(message: &str) -> Option<Vec<String>> {
+    use std::iter::once;
+
     lazy_static! {
         static ref REGEX_DIC: Regex =
             Regex::new(r"^[dD](?:ic)? (.+)$").unwrap();
     }
-    REGEX_DIC.captures(&message).map(|c| {
-        let msg = match daumdic::search(c.get(1).unwrap().as_str()) {
-            Ok(result) => format!("{}", result),
-            Err(e) => match e {
-                daumdic::Error(daumdic::ErrorKind::RelativeResultFound(words), _) => {
-                    words.join(", ")
+    REGEX_DIC
+        .captures(message)
+        .map(|c| c.get(1).unwrap().as_str())
+        .and_then(|query| {
+            daumdic::search(query).ok().map(|res| {
+                let word = res.word;
+                let alternatives = res.alternatives;
+
+                let v: Vec<_> = once(alternatives.join(", "))
+                    .chain(once(
+                        word.map(|word| format!("{}", word)).unwrap_or_default(),
+                    ))
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if v.is_empty() {
+                    vec!["._.".to_owned()]
+                } else {
+                    v
                 }
-                _ => "._.".to_owned(),
-            },
-        };
-        vec![msg]
-    })
+            })
+        })
 }
 
 fn air(message: &str, app_key: &str) -> Option<Vec<String>> {
@@ -65,15 +87,15 @@ fn air(message: &str, app_key: &str) -> Option<Vec<String>> {
         static ref REGEX_AIR: Regex =
             Regex::new(r"^(air|pm|pm10|pm25|o3|so2|no2|co|so2) (.+)$").unwrap();
     }
-    REGEX_AIR.captures(&message).map(|c| {
+    REGEX_AIR.captures(message).map(|c| {
         daummap::AddressRequest::new(app_key, c.get(2).unwrap().as_str())
             .get()
-            .filter_map(get_coord_from_address)
+            .filter_map(|address| get_coord_from_address(&address))
             .next()
             .or_else(|| {
                 daummap::KeywordRequest::new(app_key, c.get(2).unwrap().as_str())
                     .get()
-                    .filter_map(get_coord_from_place)
+                    .filter_map(|place| get_coord_from_place(&place))
                     .next()
             })
             .and_then(|(longitude, latitude)| airkorea::search(longitude, latitude).ok())
@@ -111,18 +133,19 @@ fn join<T, U>(e: (Option<T>, Option<U>)) -> Option<(T, U)> {
     }
 }
 
-fn get_coord_from_address(address: daummap::Address) -> Option<(f32, f32)> {
+fn get_coord_from_address(address: &daummap::Address) -> Option<(f32, f32)> {
     address
         .land_lot
+        .as_ref()
         .map(|land_lot| (land_lot.longitude, land_lot.latitude))
         .and_then(join)
 }
 
-fn get_coord_from_place(place: daummap::Place) -> Option<(f32, f32)> {
+fn get_coord_from_place(place: &daummap::Place) -> Option<(f32, f32)> {
     join((place.longitude, place.latitude))
 }
 
-fn format_pollutant_with_name<'a>(pollutant: &'a airkorea::Pollutant) -> String {
+fn format_pollutant_with_name(pollutant: &airkorea::Pollutant) -> String {
     format!(
         "{} ({}): {} ({})",
         pollutant.name,
