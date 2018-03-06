@@ -19,9 +19,13 @@ fn main() {
     server
         .for_each_incoming(|msg| match msg.command {
             Command::PRIVMSG(channel, message) => {
-                let msgs = dic(&message)
-                    .or_else(|| air(&message, app_key))
-                    .unwrap_or_else(|| vec![]);
+                let msgs = parse_dic(&message)
+                    .and_then(|word| search_dic(&word))
+                    .or_else(|| {
+                        parse_air(&message)
+                            .and_then(|(command, query)| search_air(&command, &query, app_key))
+                    })
+                    .unwrap_or_else(|| vec!["._.".to_owned()]);
                 for msg in msgs {
                     server.send_privmsg(&channel, &msg).unwrap();
                 }
@@ -52,78 +56,87 @@ fn main() {
         .unwrap();
 }
 
-fn dic(message: &str) -> Option<Vec<String>> {
-    use std::iter::once;
-
+fn parse_dic(message: &str) -> Option<String> {
     lazy_static! {
         static ref REGEX_DIC: Regex =
             Regex::new(r"^[dD](?:ic)? (.+)$").unwrap();
     }
     REGEX_DIC
         .captures(message)
-        .map(|c| c.get(1).unwrap().as_str())
-        .and_then(|query| {
-            daumdic::search(query).ok().map(|res| {
-                let word = res.word;
-                let alternatives = res.alternatives;
-
-                let v: Vec<_> = once(alternatives.join(", "))
-                    .chain(once(
-                        word.map(|word| format!("{}", word)).unwrap_or_default(),
-                    ))
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if v.is_empty() {
-                    vec!["._.".to_owned()]
-                } else {
-                    v
-                }
-            })
-        })
+        .map(|c| c.get(1).unwrap().as_str().to_owned())
 }
 
-fn air(message: &str, app_key: &str) -> Option<Vec<String>> {
+fn search_dic(query: &str) -> Option<Vec<String>> {
+    use std::iter::once;
+
+    daumdic::search(query).ok().map(|res| {
+        let word = res.word;
+        let alternatives = res.alternatives;
+
+        let v: Vec<_> = once(alternatives.join(", "))
+            .chain(once(
+                word.map(|word| format!("{}", word)).unwrap_or_default(),
+            ))
+            .filter(|s| !s.is_empty())
+            .collect();
+        v
+    })
+}
+
+fn parse_air(message: &str) -> Option<(String, String)> {
     lazy_static! {
         static ref REGEX_AIR: Regex =
             Regex::new(r"^(air|pm|pm10|pm25|o3|so2|no2|co|so2) (.+)$").unwrap();
     }
     REGEX_AIR.captures(message).map(|c| {
-        daummap::AddressRequest::new(app_key, c.get(2).unwrap().as_str())
-            .get()
-            .filter_map(|address| get_coord_from_address(&address))
-            .next()
-            .or_else(|| {
-                daummap::KeywordRequest::new(app_key, c.get(2).unwrap().as_str())
-                    .get()
-                    .filter_map(|place| get_coord_from_place(&place))
-                    .next()
-            })
-            .and_then(|(longitude, latitude)| airkorea::search(longitude, latitude).ok())
-            .map(|status| {
-                let id = c.get(1).unwrap().as_str();
-                let mut v: Vec<_> = vec![format!("측정소: {}", status.station_address.clone())];
-                v.extend(match id {
-                    "air" => status
+        (
+            c.get(1).unwrap().as_str().to_owned(),
+            c.get(2).unwrap().as_str().to_owned(),
+        )
+    })
+}
+
+fn search_air(command: &str, query: &str, app_key: &str) -> Option<Vec<String>> {
+    use std::iter::once;
+
+    daummap::AddressRequest::new(app_key, query)
+        .get()
+        .filter_map(|address| get_coord_from_address(&address))
+        .next()
+        .or_else(|| {
+            daummap::KeywordRequest::new(app_key, query)
+                .get()
+                .filter_map(|place| get_coord_from_place(&place))
+                .next()
+        })
+        .and_then(|(longitude, latitude)| airkorea::search(longitude, latitude).ok())
+        .and_then(|status| {
+            let station_address = status.station_address.clone();
+            match command {
+                "air" => Some(
+                    status
                         .into_iter()
                         .map(|pollutant| format_pollutant_with_name(&pollutant))
-                        .collect::<Vec<String>>(),
-                    "pm" => status
+                        .collect::<Vec<_>>(),
+                ),
+                "pm" => Some(
+                    status
                         .into_iter()
                         .take(2)
                         .map(|pollutant| format_pollutant_with_name(&pollutant))
-                        .collect::<Vec<String>>(),
-                    id => vec![
-                        status
-                            .into_map()
-                            .get(id)
-                            .map(format_pollutant_with_name)
-                            .unwrap_or_else(|| "._.".to_owned()),
-                    ],
-                });
-                v
+                        .collect::<Vec<_>>(),
+                ),
+                command => status
+                    .into_map()
+                    .get(command)
+                    .map(format_pollutant_with_name)
+                    .map(|res| vec![res]),
+            }.map(|res| {
+                once(format!("측정소: {}", station_address))
+                    .chain(res)
+                    .collect::<Vec<_>>()
             })
-            .unwrap_or_else(|| vec!["._.".to_owned()])
-    })
+        })
 }
 
 fn join<T, U>(e: (Option<T>, Option<U>)) -> Option<(T, U)> {
