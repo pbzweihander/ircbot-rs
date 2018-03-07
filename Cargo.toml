@@ -4,7 +4,7 @@ version = "0.2.0"
 authors = ["pbzweihander <sd852456@naver.com>"]
 
 [dependencies]
-irc = "0.12"
+irc = "0.13"
 daumdic = "0.3"
 regex = "0.2"
 lazy_static = "1.0"

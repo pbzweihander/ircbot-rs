@@ -9,51 +9,50 @@ extern crate regex;
 use irc::client::prelude::*;
 use std::env::args;
 use regex::Regex;
+use std::path::PathBuf;
 
 fn main() {
-    let config_path = args().nth(1).unwrap_or_else(|| "config.toml".to_owned());
-    let server = IrcServer::new(&config_path).unwrap();
-    let app_key = server.config().get_option("daummap_app_key");
-    let mut config = server.config().clone();
-    server.identify().unwrap();
-    server
-        .for_each_incoming(|msg| match msg.command {
+    let config_path = PathBuf::from(args().nth(1).unwrap_or_else(|| "config.toml".to_owned()));
+    let config = Config::load(&config_path).unwrap();
+    let app_key = config.get_option("daummap_app_key").to_owned();
+
+    let mut reactor = IrcReactor::new().unwrap();
+    let client = reactor.prepare_client_and_connect(&config).unwrap();
+    client.identify().unwrap();
+
+    reactor.register_client_with_handler(client, move |ref client, msg| {
+        match msg.command {
             Command::PRIVMSG(channel, message) => {
                 let msgs = parse_dic(&message)
                     .and_then(|word| search_dic(&word))
                     .or_else(|| {
                         parse_air(&message)
-                            .and_then(|(command, query)| search_air(&command, &query, app_key))
+                            .and_then(|(command, query)| search_air(&command, &query, &app_key))
                     })
                     .unwrap_or_else(|| vec!["._.".to_owned()]);
                 for msg in msgs {
-                    server.send_privmsg(&channel, &msg).unwrap();
+                    client.send_privmsg(&channel, &msg).unwrap();
                 }
             }
             Command::INVITE(nickname, channel) => {
-                if nickname == server.current_nickname() {
-                    server.send_join(&channel).unwrap();
+                if nickname == client.current_nickname() {
+                    client.send_join(&channel).unwrap();
+                    let mut config = Config::load(&config_path).unwrap();
                     config.channels.as_mut().unwrap().push(channel);
                     config.save(&config_path).unwrap();
                 }
             }
             Command::KICK(channel, nickname, _) => {
-                if nickname == server.current_nickname() {
-                    if let Some(i) = config
-                        .channels
-                        .as_ref()
-                        .unwrap()
-                        .iter()
-                        .position(|s| s == &channel)
-                    {
-                        config.channels.as_mut().unwrap().remove(i);
-                        config.save(&config_path).unwrap();
-                    }
+                if nickname == client.current_nickname() {
+                    let mut config = Config::load(&config_path).unwrap();
+                    config.channels.as_mut().unwrap().retain(|c| c != &channel);
+                    config.save(&config_path).unwrap();
                 }
             }
             _ => (),
-        })
-        .unwrap();
+        };
+        Ok(())
+    });
 }
 
 fn parse_dic(message: &str) -> Option<String> {
@@ -64,6 +63,19 @@ fn parse_dic(message: &str) -> Option<String> {
     REGEX_DIC
         .captures(message)
         .map(|c| c.get(1).unwrap().as_str().to_owned())
+}
+
+fn parse_air(message: &str) -> Option<(String, String)> {
+    lazy_static! {
+        static ref REGEX_AIR: Regex =
+            Regex::new(r"^(air|pm|pm10|pm25|o3|so2|no2|co|so2) (.+)$").unwrap();
+    }
+    REGEX_AIR.captures(message).map(|c| {
+        (
+            c.get(1).unwrap().as_str().to_owned(),
+            c.get(2).unwrap().as_str().to_owned(),
+        )
+    })
 }
 
 fn search_dic(query: &str) -> Option<Vec<String>> {
@@ -80,19 +92,6 @@ fn search_dic(query: &str) -> Option<Vec<String>> {
             .filter(|s| !s.is_empty())
             .collect();
         v
-    })
-}
-
-fn parse_air(message: &str) -> Option<(String, String)> {
-    lazy_static! {
-        static ref REGEX_AIR: Regex =
-            Regex::new(r"^(air|pm|pm10|pm25|o3|so2|no2|co|so2) (.+)$").unwrap();
-    }
-    REGEX_AIR.captures(message).map(|c| {
-        (
-            c.get(1).unwrap().as_str().to_owned(),
-            c.get(2).unwrap().as_str().to_owned(),
-        )
     })
 }
 
