@@ -44,36 +44,54 @@ macro_rules! get_imgur_client_id {
 
 fn main() {
     let mut reactor = IrcReactor::new().unwrap();
-    let client = reactor.prepare_client_and_connect(&CONFIG).unwrap();
-    client.identify().unwrap();
 
-    reactor.register_client_with_handler(client, move |client, msg| {
-        match msg.command {
-            Command::PRIVMSG(channel, message) => {
-                let msgs = process_message(&message).unwrap_or_else(|| vec!["._.".to_owned()]);
-                for msg in msgs {
-                    client.send_privmsg(&channel, &msg).unwrap();
-                }
-            }
-            Command::INVITE(nickname, channel) => {
-                if nickname == client.current_nickname() {
-                    client.send_join(&channel).unwrap();
-                    let mut config = Config::load(&*CONFIG_PATH).unwrap();
-                    config.channels.as_mut().unwrap().push(channel);
-                    config.save(&*CONFIG_PATH).unwrap();
-                }
-            }
-            Command::KICK(channel, nickname, _) => {
-                if nickname == client.current_nickname() {
-                    let mut config = Config::load(&*CONFIG_PATH).unwrap();
-                    config.channels.as_mut().unwrap().retain(|c| c != &channel);
-                    config.save(&*CONFIG_PATH).unwrap();
-                }
-            }
-            _ => (),
-        };
-        Ok(())
-    });
+    loop {
+        match reactor
+            .prepare_client_and_connect(&CONFIG)
+            .and_then(|client| {
+                client.identify().and_then(|_| {
+                    reactor.register_client_with_handler(client, move |client, msg| {
+                        match msg.command {
+                            Command::PRIVMSG(channel, message) => {
+                                let msgs = process_message(&message)
+                                    .map(|v| {
+                                        if v.is_empty() {
+                                            vec!["._.".to_owned()]
+                                        } else {
+                                            v
+                                        }
+                                    })
+                                    .unwrap_or_default();
+                                for msg in msgs {
+                                    client.send_privmsg(&channel, &msg).unwrap();
+                                }
+                            }
+                            Command::INVITE(nickname, channel) => {
+                                if nickname == client.current_nickname() {
+                                    client.send_join(&channel).unwrap();
+                                    let mut config = Config::load(&*CONFIG_PATH).unwrap();
+                                    config.channels.as_mut().unwrap().push(channel);
+                                    config.save(&*CONFIG_PATH).unwrap();
+                                }
+                            }
+                            Command::KICK(channel, nickname, _) => {
+                                if nickname == client.current_nickname() {
+                                    let mut config = Config::load(&*CONFIG_PATH).unwrap();
+                                    config.channels.as_mut().unwrap().retain(|c| c != &channel);
+                                    config.save(&*CONFIG_PATH).unwrap();
+                                }
+                            }
+                            _ => (),
+                        };
+                        Ok(())
+                    });
+                    reactor.run()
+                })
+            }) {
+            Ok(_) => break,
+            Err(e) => eprintln!("{}", e),
+        }
+    }
 }
 
 fn process_message(message: &str) -> Option<Vec<String>> {
@@ -93,7 +111,6 @@ fn process_message(message: &str) -> Option<Vec<String>> {
                 )
             })
         })
-        .and_then(|v| if v.is_empty() { None } else { Some(v) })
 }
 
 fn parse_dic(message: &str) -> Option<String> {
