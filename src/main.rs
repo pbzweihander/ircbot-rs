@@ -7,52 +7,82 @@ extern crate lazy_static;
 extern crate regex;
 
 use irc::client::prelude::*;
-use std::env::args;
 use regex::Regex;
+
+use std::env::args;
 use std::path::PathBuf;
 
+lazy_static! {
+    static ref CONFIG_PATH: PathBuf =
+        PathBuf::from(args().nth(1).unwrap_or_else(|| "config.toml".to_owned()));
+    static ref CONFIG: Config = Config::load(&*CONFIG_PATH).unwrap();
+}
+
+macro_rules! get_daummap_app_key {
+    ($config:expr) => {
+        $config.get_option("daummap_app_key")
+    }
+}
+
 fn main() {
-    let config_path = PathBuf::from(args().nth(1).unwrap_or_else(|| "config.toml".to_owned()));
-    let config = Config::load(&config_path).unwrap();
-    let app_key = config.get_option("daummap_app_key").to_owned();
-
     let mut reactor = IrcReactor::new().unwrap();
-    let client = reactor.prepare_client_and_connect(&config).unwrap();
-    client.identify().unwrap();
+    loop {
+        match reactor
+            .prepare_client_and_connect(&CONFIG)
+            .and_then(|client| {
+                client.identify().and_then(|_| {
+                    reactor.register_client_with_handler(client, move |client, msg| {
+                        match msg.command {
+                            Command::PRIVMSG(channel, message) => {
+                                let msgs = process_message(&message)
+                                    .map(|v| {
+                                        if v.is_empty() {
+                                            vec!["._.".to_owned()]
+                                        } else {
+                                            v
+                                        }
+                                    })
+                                    .unwrap_or_default();
+                                for msg in msgs {
+                                    client.send_privmsg(&channel, &msg).unwrap();
+                                }
+                            }
+                            Command::INVITE(nickname, channel) => {
+                                if nickname == client.current_nickname() {
+                                    client.send_join(&channel).unwrap();
+                                    let mut config = Config::load(&*CONFIG_PATH).unwrap();
+                                    config.channels.as_mut().unwrap().push(channel);
+                                    config.save(&*CONFIG_PATH).unwrap();
+                                }
+                            }
+                            Command::KICK(channel, nickname, _) => {
+                                if nickname == client.current_nickname() {
+                                    let mut config = Config::load(&*CONFIG_PATH).unwrap();
+                                    config.channels.as_mut().unwrap().retain(|c| c != &channel);
+                                    config.save(&*CONFIG_PATH).unwrap();
+                                }
+                            }
+                            _ => (),
+                        };
+                        Ok(())
+                    });
+                    reactor.run()
+                })
+            }) {
+            Ok(_) => break,
+            Err(e) => eprintln!("{}", e),
+        }
+    }
+}
 
-    reactor.register_client_with_handler(client, move |ref client, msg| {
-        match msg.command {
-            Command::PRIVMSG(channel, message) => {
-                let msgs = parse_dic(&message)
-                    .and_then(|word| search_dic(&word))
-                    .or_else(|| {
-                        parse_air(&message)
-                            .and_then(|(command, query)| search_air(&command, &query, &app_key))
-                    })
-                    .unwrap_or_else(|| vec!["._.".to_owned()]);
-                for msg in msgs {
-                    client.send_privmsg(&channel, &msg).unwrap();
-                }
-            }
-            Command::INVITE(nickname, channel) => {
-                if nickname == client.current_nickname() {
-                    client.send_join(&channel).unwrap();
-                    let mut config = Config::load(&config_path).unwrap();
-                    config.channels.as_mut().unwrap().push(channel);
-                    config.save(&config_path).unwrap();
-                }
-            }
-            Command::KICK(channel, nickname, _) => {
-                if nickname == client.current_nickname() {
-                    let mut config = Config::load(&config_path).unwrap();
-                    config.channels.as_mut().unwrap().retain(|c| c != &channel);
-                    config.save(&config_path).unwrap();
-                }
-            }
-            _ => (),
-        };
-        Ok(())
-    });
+fn process_message(message: &str) -> Option<Vec<String>> {
+    parse_dic(message)
+        .and_then(|word| search_dic(&word))
+        .or_else(|| {
+            parse_air(message).and_then(|(command, query)| {
+                search_air(&command, &query, get_daummap_app_key!(CONFIG))
+            })
+        })
 }
 
 fn parse_dic(message: &str) -> Option<String> {
