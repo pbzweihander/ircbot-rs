@@ -52,20 +52,19 @@ fn main() {
                 client.identify().and_then(|_| {
                     reactor.register_client_with_handler(client, move |client, msg| {
                         match msg.command {
-                            Command::PRIVMSG(channel, message) => {
-                                let msgs = process_message(&message)
-                                    .map(|v| {
-                                        if v.is_empty() {
-                                            vec!["._.".to_owned()]
-                                        } else {
-                                            v
-                                        }
-                                    })
-                                    .unwrap_or_default();
-                                for msg in msgs {
-                                    client.send_privmsg(&channel, &msg).unwrap();
-                                }
-                            }
+                            Command::PRIVMSG(channel, message) => process_message(&message)
+                                .map(|v| {
+                                    if v.is_empty() {
+                                        vec!["._.".to_owned()]
+                                    } else {
+                                        v
+                                    }
+                                })
+                                .unwrap_or_default()
+                                .into_iter()
+                                .for_each(|m| {
+                                    client.send_privmsg(&channel, &m).unwrap();
+                                }),
                             Command::INVITE(nickname, channel) => {
                                 if nickname == client.current_nickname() {
                                     client.send_join(&channel).unwrap();
@@ -228,7 +227,7 @@ fn search_wolfram(query: &str, wolfram_app_id: &str, imgur_client_id: &str) -> O
         .and_then(|mut resp| resp.text().ok())
         .map(|t| {
             vec![
-                t + " "
+                t.chars().take(300).collect::<String>() + " "
                     + &format!(
                         "http://api.wolframalpha.com/v1/simple?appid={}&i={}&units=metric",
                         wolfram_app_id, query
