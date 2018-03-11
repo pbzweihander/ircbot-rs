@@ -228,7 +228,7 @@ fn search_wolfram(query: &str, wolfram_app_id: &str, imgur_client_id: &str) -> O
         .and_then(|mut resp| resp.text().ok())
         .map(|t| {
             vec![
-                t
+                t + " "
                     + &format!(
                         "http://api.wolframalpha.com/v1/simple?appid={}&i={}&units=metric",
                         wolfram_app_id, query
