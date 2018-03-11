@@ -15,7 +15,7 @@ extern crate tokio_core;
 
 use futures::prelude::*;
 use futures::stream;
-use futures::future::{err, ok};
+use futures::future::ok;
 use irc::client::prelude::*;
 use irc::error::IrcError;
 use regex::Regex;
@@ -24,20 +24,6 @@ use tokio_core::reactor::Handle;
 
 use std::env::args;
 use std::path::PathBuf;
-
-enum HandleError {
-    NoMatch,
-    NoResult,
-}
-
-impl HandleError {
-    pub fn no_result<T>() -> Box<Future<Item = T, Error = HandleError>>
-    where
-        T: 'static,
-    {
-        Box::new(err(HandleError::NoResult))
-    }
-}
 
 lazy_static! {
     static ref CONFIG_PATH: PathBuf =
@@ -106,10 +92,14 @@ fn handle_privmsg(
 ) -> Box<Future<Item = (), Error = IrcError>> {
     Box::new(
         process_message(handle, message)
-            .or_else(|e| match e {
-                HandleError::NoResult => ok::<_, IrcError>(vec!["._.".to_owned()]),
-                _ => ok(vec![]),
+            .map(|v| {
+                if v.is_empty() {
+                    vec!["._.".to_owned()]
+                } else {
+                    v
+                }
             })
+            .or_else(|_| ok(vec![]))
             .and_then(move |msgs| {
                 msgs.into_iter()
                     .map(|msg| client.send_privmsg(&channel, &msg))
@@ -150,35 +140,30 @@ fn do_nothing() -> Box<Future<Item = (), Error = IrcError>> {
     Box::new(ok(()))
 }
 
-fn process_message(
-    handle: Handle,
-    message: String,
-) -> Box<Future<Item = Vec<String>, Error = HandleError>> {
+fn process_message(handle: Handle, message: String) -> Box<Future<Item = Vec<String>, Error = ()>> {
     let m = message.clone();
     Box::new(
         parse_dic(&message)
             .and_then(|word| search_dic(&word))
-            .or_else(move |e| match e {
-                HandleError::NoMatch => Box::new(parse_air(&message.clone()).and_then(
-                    |(command, query)| search_air(command, &query, &get_daummap_app_key!(CONFIG)),
-                )),
-                _ => HandleError::no_result(),
+            .or_else(move |_| {
+                parse_air(&message.clone()).and_then(|(command, query)| {
+                    search_air(command, &query, &get_daummap_app_key!(CONFIG))
+                })
             })
-            .or_else(move |e| match e {
-                HandleError::NoMatch => Box::new(parse_wolfram(&m).and_then(|query| {
+            .or_else(move |_| {
+                Box::new(parse_wolfram(&m).and_then(|query| {
                     search_wolfram(
                         handle,
                         &query,
                         &get_wolfram_app_id!(CONFIG),
                         get_imgur_client_id!(CONFIG),
                     )
-                })),
-                _ => HandleError::no_result(),
+                }))
             }),
     )
 }
 
-fn parse_dic(message: &str) -> Box<Future<Item = String, Error = HandleError>> {
+fn parse_dic(message: &str) -> Box<Future<Item = String, Error = ()>> {
     lazy_static! {
         static ref REGEX_DIC: Regex =
             Regex::new(r"^[dD](?:ic)? (.+)$").unwrap();
@@ -187,12 +172,12 @@ fn parse_dic(message: &str) -> Box<Future<Item = String, Error = HandleError>> {
         REGEX_DIC
             .captures(message)
             .map(|c| c.get(1).unwrap().as_str().to_owned())
-            .ok_or_else(|| HandleError::NoMatch)
+            .ok_or_else(|| ())
             .into_future(),
     )
 }
 
-fn parse_air(message: &str) -> Box<Future<Item = (String, String), Error = HandleError>> {
+fn parse_air(message: &str) -> Box<Future<Item = (String, String), Error = ()>> {
     lazy_static! {
         static ref REGEX_AIR: Regex =
             Regex::new(r"^(air|pm|pm10|pm25|o3|so2|no2|co|so2) (.+)$").unwrap();
@@ -206,12 +191,12 @@ fn parse_air(message: &str) -> Box<Future<Item = (String, String), Error = Handl
                     c.get(2).unwrap().as_str().to_owned(),
                 )
             })
-            .ok_or_else(|| HandleError::NoMatch)
+            .ok_or_else(|| ())
             .into_future(),
     )
 }
 
-fn parse_wolfram(message: &str) -> Box<Future<Item = String, Error = HandleError>> {
+fn parse_wolfram(message: &str) -> Box<Future<Item = String, Error = ()>> {
     lazy_static! {
         static ref REGEX_WOLFRAM: Regex =
             Regex::new(r"^[wW](?:olfram)? (.+)$").unwrap();
@@ -220,12 +205,12 @@ fn parse_wolfram(message: &str) -> Box<Future<Item = String, Error = HandleError
         REGEX_WOLFRAM
             .captures(message)
             .map(|c| c.get(1).unwrap().as_str().to_owned())
-            .ok_or_else(|| HandleError::NoMatch)
+            .ok_or_else(|| ())
             .into_future(),
     )
 }
 
-fn search_dic(query: &str) -> Box<Future<Item = Vec<String>, Error = HandleError>> {
+fn search_dic(query: &str) -> Box<Future<Item = Vec<String>, Error = ()>> {
     use std::iter::once;
     Box::new(
         daumdic::search(query)
@@ -242,14 +227,7 @@ fn search_dic(query: &str) -> Box<Future<Item = Vec<String>, Error = HandleError
                     .collect();
                 v
             })
-            .ok_or_else(|| HandleError::NoResult)
-            .and_then(|v| {
-                if v.is_empty() {
-                    Err(HandleError::NoResult)
-                } else {
-                    Ok(v)
-                }
-            })
+            .ok_or_else(|| ())
             .into_future(),
     )
 }
@@ -258,7 +236,7 @@ fn search_air(
     command: String,
     query: &str,
     app_key: &str,
-) -> Box<Future<Item = Vec<String>, Error = HandleError>> {
+) -> Box<Future<Item = Vec<String>, Error = ()>> {
     use std::iter::once;
 
     Box::new(
@@ -282,7 +260,7 @@ fn search_air(
                     .map_err(|_| ())
                     .into_future()
             })
-            .map(move |status| {
+            .and_then(move |status| {
                 let station_address = status.station_address.clone();
                 match command.as_ref() {
                     "air" => Some(
@@ -308,9 +286,9 @@ fn search_air(
                         .chain(res)
                         .collect::<Vec<_>>()
                 })
+                    .ok_or_else(|| ())
             })
-            .map(|o| if o.is_some() { o.unwrap() } else { vec![] })
-            .map_err(|_| HandleError::NoResult),
+            .or_else(|_| ok(vec![])),
     )
 }
 
@@ -319,7 +297,7 @@ fn search_wolfram(
     query: &str,
     wolfram_app_id: &str,
     imgur_client_id: String,
-) -> Box<Future<Item = Vec<String>, Error = HandleError>> {
+) -> Box<Future<Item = Vec<String>, Error = ()>> {
     #[derive(Deserialize)]
     struct ImgurResponse {
         data: ImgurResponseData,
@@ -389,7 +367,7 @@ fn search_wolfram(
                     .map(|resp| resp.data.link),
             )
             .map(|(simple, url)| vec![simple + " " + &url])
-            .map_err(|_| HandleError::NoResult),
+            .or_else(|_| ok(vec![])),
     )
 }
 
