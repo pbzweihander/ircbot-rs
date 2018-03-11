@@ -10,3 +10,5 @@ user_info = "IRC bot"
 
 [options]
 daummap_app_key = "APP_KEY"
+wolfram_app_id = "APP_ID"
+imgur_client_id = "CLIENT_ID"
