@@ -204,6 +204,7 @@ fn search_air(command: &str, query: &str, app_key: &str) -> Option<Vec<String>> 
                     .collect::<Vec<_>>()
             })
         })
+        .or_else(|| Some(vec![]))
 }
 
 fn search_wolfram(query: &str, wolfram_app_id: &str, imgur_client_id: &str) -> Option<Vec<String>> {
@@ -216,6 +217,8 @@ fn search_wolfram(query: &str, wolfram_app_id: &str, imgur_client_id: &str) -> O
         link: String,
     }
 
+    let query = query.replace("+", "%2B");
+
     format!(
         "http://api.wolframalpha.com/v1/result?appid={}&i={}&units=metric",
         wolfram_app_id, query
@@ -224,40 +227,40 @@ fn search_wolfram(query: &str, wolfram_app_id: &str, imgur_client_id: &str) -> O
         .and_then(|uri| reqwest::get(uri).ok())
         .and_then(|mut resp| resp.text().ok())
         .map(|t| {
-            let url = format!(
-                "http://api.wolframalpha.com/v1/simple?appid={}&i={}&units=metric",
-                wolfram_app_id, query
-            ).parse::<reqwest::Url>()
-                .ok()
-                .and_then(|uri| reqwest::get(uri).ok())
-                .and_then(|mut resp| {
-                    let mut buf = vec![];
-                    resp.read_to_end(&mut buf).ok().map(|_| buf)
-                })
-                .map(|img| base64::encode(&img))
-                .and_then(|img| {
-                    reqwest::Client::new()
-                        .post("https://api.imgur.com/3/image")
-                        .header(reqwest::header::Authorization(format!(
-                            "Client-ID {}",
-                            imgur_client_id
-                        )))
-                        .multipart(
-                            reqwest::multipart::Form::new()
-                                .text("image", img)
-                                .text("title", query.to_owned()),
-                        )
-                        .send()
+            vec![
+                t
+                    + &format!(
+                        "http://api.wolframalpha.com/v1/simple?appid={}&i={}&units=metric",
+                        wolfram_app_id, query
+                    ).parse::<reqwest::Url>()
                         .ok()
-                })
-                .and_then(|mut resp| resp.json::<ImgurResponse>().ok())
-                .map(|resp| resp.data.link);
-            if url.is_some() {
-                vec![t, url.unwrap()]
-            } else {
-                vec![t]
-            }
+                        .and_then(|uri| reqwest::get(uri).ok())
+                        .and_then(|mut resp| {
+                            let mut buf = vec![];
+                            resp.read_to_end(&mut buf).ok().map(|_| buf)
+                        })
+                        .map(|img| base64::encode(&img))
+                        .and_then(|img| {
+                            reqwest::Client::new()
+                                .post("https://api.imgur.com/3/image")
+                                .header(reqwest::header::Authorization(format!(
+                                    "Client-ID {}",
+                                    imgur_client_id
+                                )))
+                                .multipart(
+                                    reqwest::multipart::Form::new()
+                                        .text("image", img)
+                                        .text("title", query.to_owned()),
+                                )
+                                .send()
+                                .ok()
+                        })
+                        .and_then(|mut resp| resp.json::<ImgurResponse>().ok())
+                        .map(|resp| resp.data.link)
+                        .unwrap_or_default(),
+            ]
         })
+        .or_else(|| Some(vec![]))
 }
 
 fn join<T, U>(e: (Option<T>, Option<U>)) -> Option<(T, U)> {
