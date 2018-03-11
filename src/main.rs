@@ -65,30 +65,30 @@ macro_rules! get_imgur_client_id {
 
 fn main() {
     let mut reactor = IrcReactor::new().unwrap();
-    let handle = reactor.inner_handle();
 
     loop {
         match reactor
             .prepare_client_and_connect(&CONFIG)
             .and_then(|client| {
                 client.identify().and_then(|_| {
-                    let handle = handle.clone();
-                    reactor.register_client_with_handler(client, move |client, msg| {
-                        ok(Box::new(client.clone()))
-                            .join(ok(Box::new(handle.clone())))
-                            .and_then(|(client, handle)| match msg.command {
-                                Command::PRIVMSG(channel, message) => {
-                                    handle_privmsg(*handle, *client, channel, message)
-                                }
-                                Command::INVITE(nickname, channel) => {
-                                    handle_invite(&*client, &nickname, &channel)
-                                }
-                                Command::KICK(channel, nickname, _) => {
-                                    handle_kick(&*client, &nickname, &channel)
-                                }
-                                _ => do_nothing(),
-                            })
-                    });
+                    let handle = reactor.inner_handle();
+                    reactor.register_future(client.stream().for_each(move |msg| {
+                        let client = client.clone();
+                        let handle = handle.clone();
+
+                        match msg.command {
+                            Command::PRIVMSG(channel, message) => {
+                                handle_privmsg(handle, client, channel, message)
+                            }
+                            Command::INVITE(nickname, channel) => {
+                                handle_invite(&client, &nickname, &channel)
+                            }
+                            Command::KICK(channel, nickname, _) => {
+                                handle_kick(&client, &nickname, &channel)
+                            }
+                            _ => do_nothing(),
+                        }
+                    }));
                     reactor.run()
                 })
             }) {
@@ -168,7 +168,7 @@ fn process_message(
                 HandleError::NoMatch => Box::new(parse_wolfram(&m).and_then(|query| {
                     search_wolfram(
                         handle,
-                        query,
+                        &query,
                         &get_wolfram_app_id!(CONFIG),
                         get_imgur_client_id!(CONFIG),
                     )
@@ -316,7 +316,7 @@ fn search_air(
 
 fn search_wolfram(
     handle: Handle,
-    query: String,
+    query: &str,
     wolfram_app_id: &str,
     imgur_client_id: String,
 ) -> Box<Future<Item = Vec<String>, Error = HandleError>> {
@@ -331,6 +331,7 @@ fn search_wolfram(
 
     let h1 = handle.clone();
     let h2 = handle.clone();
+    let query = query.replace("+", "%2B");
 
     Box::new(
         format!(
