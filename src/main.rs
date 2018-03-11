@@ -1,15 +1,21 @@
 extern crate airkorea;
+extern crate base64;
 extern crate daumdic;
 extern crate daummap;
 extern crate irc;
 #[macro_use]
 extern crate lazy_static;
 extern crate regex;
+extern crate reqwest;
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
 
 use irc::client::prelude::*;
 use regex::Regex;
 
 use std::env::args;
+use std::io::Read;
 use std::path::PathBuf;
 
 lazy_static! {
@@ -24,8 +30,21 @@ macro_rules! get_daummap_app_key {
     }
 }
 
+macro_rules! get_wolfram_app_id {
+    ($config:expr) => {
+        $config.get_option("wolfram_app_id")
+    }
+}
+
+macro_rules! get_imgur_client_id {
+    ($config:expr) => {
+        $config.get_option("imgur_client_id")
+    }
+}
+
 fn main() {
     let mut reactor = IrcReactor::new().unwrap();
+
     loop {
         match reactor
             .prepare_client_and_connect(&CONFIG)
@@ -83,6 +102,15 @@ fn process_message(message: &str) -> Option<Vec<String>> {
                 search_air(&command, &query, get_daummap_app_key!(CONFIG))
             })
         })
+        .or_else(|| {
+            parse_wolfram(message).and_then(|query| {
+                search_wolfram(
+                    &query,
+                    get_wolfram_app_id!(CONFIG),
+                    get_imgur_client_id!(CONFIG),
+                )
+            })
+        })
 }
 
 fn parse_dic(message: &str) -> Option<String> {
@@ -106,6 +134,16 @@ fn parse_air(message: &str) -> Option<(String, String)> {
             c.get(2).unwrap().as_str().to_owned(),
         )
     })
+}
+
+fn parse_wolfram(message: &str) -> Option<String> {
+    lazy_static! {
+        static ref REGEX_WOLFRAM: Regex =
+            Regex::new(r"^[wW](?:olfram)? (.+)$").unwrap();
+    }
+    REGEX_WOLFRAM
+        .captures(message)
+        .map(|c| c.get(1).unwrap().as_str().to_owned())
 }
 
 fn search_dic(query: &str) -> Option<Vec<String>> {
@@ -166,6 +204,63 @@ fn search_air(command: &str, query: &str, app_key: &str) -> Option<Vec<String>> 
                     .collect::<Vec<_>>()
             })
         })
+        .or_else(|| Some(vec![]))
+}
+
+fn search_wolfram(query: &str, wolfram_app_id: &str, imgur_client_id: &str) -> Option<Vec<String>> {
+    #[derive(Deserialize)]
+    struct ImgurResponse {
+        data: ImgurResponseData,
+    }
+    #[derive(Deserialize)]
+    struct ImgurResponseData {
+        link: String,
+    }
+
+    let query = query.replace("+", "%2B");
+
+    format!(
+        "http://api.wolframalpha.com/v1/result?appid={}&i={}&units=metric",
+        wolfram_app_id, query
+    ).parse::<reqwest::Url>()
+        .ok()
+        .and_then(|uri| reqwest::get(uri).ok())
+        .and_then(|mut resp| resp.text().ok())
+        .map(|t| {
+            vec![
+                t
+                    + &format!(
+                        "http://api.wolframalpha.com/v1/simple?appid={}&i={}&units=metric",
+                        wolfram_app_id, query
+                    ).parse::<reqwest::Url>()
+                        .ok()
+                        .and_then(|uri| reqwest::get(uri).ok())
+                        .and_then(|mut resp| {
+                            let mut buf = vec![];
+                            resp.read_to_end(&mut buf).ok().map(|_| buf)
+                        })
+                        .map(|img| base64::encode(&img))
+                        .and_then(|img| {
+                            reqwest::Client::new()
+                                .post("https://api.imgur.com/3/image")
+                                .header(reqwest::header::Authorization(format!(
+                                    "Client-ID {}",
+                                    imgur_client_id
+                                )))
+                                .multipart(
+                                    reqwest::multipart::Form::new()
+                                        .text("image", img)
+                                        .text("title", query.to_owned()),
+                                )
+                                .send()
+                                .ok()
+                        })
+                        .and_then(|mut resp| resp.json::<ImgurResponse>().ok())
+                        .map(|resp| resp.data.link)
+                        .unwrap_or_default(),
+            ]
+        })
+        .or_else(|| Some(vec![]))
 }
 
 fn join<T, U>(e: (Option<T>, Option<U>)) -> Option<(T, U)> {
