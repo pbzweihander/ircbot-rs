@@ -17,6 +17,8 @@ use regex::Regex;
 use std::env::args;
 use std::io::Read;
 use std::path::PathBuf;
+use std::thread;
+use std::sync::mpsc::{channel, Sender};
 
 lazy_static! {
     static ref CONFIG_PATH: PathBuf =
@@ -49,43 +51,69 @@ fn main() {
         match reactor
             .prepare_client_and_connect(&CONFIG)
             .and_then(|client| {
-                client.identify().and_then(|_| {
-                    reactor.register_client_with_handler(client, move |client, msg| {
-                        match msg.command {
-                            Command::PRIVMSG(channel, message) => process_message(&message)
-                                .map(|v| {
-                                    if v.is_empty() {
-                                        vec!["._.".to_owned()]
-                                    } else {
-                                        v
-                                    }
+                client
+                    .identify()
+                    .and_then(|_| {
+                        let client = client.clone();
+                        let (tx, rx) = channel::<(String, String)>();
+                        thread::Builder::new()
+                            .name("wolfram".to_owned())
+                            .spawn(move || {
+                                rx.iter().for_each(|(channel, query)| {
+                                    search_wolfram_real(
+                                        &query,
+                                        get_wolfram_app_id!(CONFIG),
+                                        get_imgur_client_id!(CONFIG),
+                                    ).map(|msgs| {
+                                        msgs.into_iter().for_each(|m| {
+                                            client.send_privmsg(&channel, &m).unwrap();
+                                        })
+                                    });
                                 })
-                                .unwrap_or_default()
-                                .into_iter()
-                                .for_each(|m| {
-                                    client.send_privmsg(&channel, &m).unwrap();
-                                }),
-                            Command::INVITE(nickname, channel) => {
-                                if nickname == client.current_nickname() {
-                                    client.send_join(&channel).unwrap();
-                                    let mut config = Config::load(&*CONFIG_PATH).unwrap();
-                                    config.channels.as_mut().unwrap().push(channel);
-                                    config.save(&*CONFIG_PATH).unwrap();
+                            })
+                            .map(|_| tx)
+                            .map_err(|e| e.into())
+                    })
+                    .and_then(|tx| {
+                        reactor.register_client_with_handler(client, move |client, msg| {
+                            let tx = tx.clone();
+                            match msg.command {
+                                Command::PRIVMSG(channel, message) => {
+                                    process_message(&channel, &message, tx)
+                                        .map(|v| {
+                                            if v.is_empty() {
+                                                vec!["._.".to_owned()]
+                                            } else {
+                                                v
+                                            }
+                                        })
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .for_each(|m| {
+                                            client.send_privmsg(&channel, &m).unwrap();
+                                        })
                                 }
-                            }
-                            Command::KICK(channel, nickname, _) => {
-                                if nickname == client.current_nickname() {
-                                    let mut config = Config::load(&*CONFIG_PATH).unwrap();
-                                    config.channels.as_mut().unwrap().retain(|c| c != &channel);
-                                    config.save(&*CONFIG_PATH).unwrap();
+                                Command::INVITE(nickname, channel) => {
+                                    if nickname == client.current_nickname() {
+                                        client.send_join(&channel).unwrap();
+                                        let mut config = Config::load(&*CONFIG_PATH).unwrap();
+                                        config.channels.as_mut().unwrap().push(channel);
+                                        config.save(&*CONFIG_PATH).unwrap();
+                                    }
                                 }
-                            }
-                            _ => (),
-                        };
-                        Ok(())
-                    });
-                    reactor.run()
-                })
+                                Command::KICK(channel, nickname, _) => {
+                                    if nickname == client.current_nickname() {
+                                        let mut config = Config::load(&*CONFIG_PATH).unwrap();
+                                        config.channels.as_mut().unwrap().retain(|c| c != &channel);
+                                        config.save(&*CONFIG_PATH).unwrap();
+                                    }
+                                }
+                                _ => (),
+                            };
+                            Ok(())
+                        });
+                        reactor.run()
+                    })
             }) {
             Ok(_) => break,
             Err(e) => eprintln!("{}", e),
@@ -93,7 +121,11 @@ fn main() {
     }
 }
 
-fn process_message(message: &str) -> Option<Vec<String>> {
+fn process_message(
+    channel: &str,
+    message: &str,
+    wolfram_tx: Sender<(String, String)>,
+) -> Option<Vec<String>> {
     parse_dic(message)
         .and_then(|word| search_dic(&word))
         .or_else(|| {
@@ -102,13 +134,7 @@ fn process_message(message: &str) -> Option<Vec<String>> {
             })
         })
         .or_else(|| {
-            parse_wolfram(message).and_then(|query| {
-                search_wolfram(
-                    &query,
-                    get_wolfram_app_id!(CONFIG),
-                    get_imgur_client_id!(CONFIG),
-                )
-            })
+            parse_wolfram(message).and_then(|query| search_wolfram(channel, &query, wolfram_tx))
         })
 }
 
@@ -206,7 +232,22 @@ fn search_air(command: &str, query: &str, app_key: &str) -> Option<Vec<String>> 
         .or_else(|| Some(vec![]))
 }
 
-fn search_wolfram(query: &str, wolfram_app_id: &str, imgur_client_id: &str) -> Option<Vec<String>> {
+fn search_wolfram(
+    channel: &str,
+    query: &str,
+    wolfram_tx: Sender<(String, String)>,
+) -> Option<Vec<String>> {
+    wolfram_tx
+        .send((channel.to_owned(), query.to_owned()))
+        .unwrap();
+    Some(vec!["Wolfram|Alpha 검색 중...".to_owned()])
+}
+
+fn search_wolfram_real(
+    query: &str,
+    wolfram_app_id: &str,
+    imgur_client_id: &str,
+) -> Option<Vec<String>> {
     #[derive(Deserialize)]
     struct ImgurResponse {
         data: ImgurResponseData,
@@ -216,21 +257,21 @@ fn search_wolfram(query: &str, wolfram_app_id: &str, imgur_client_id: &str) -> O
         link: String,
     }
 
-    let query = query.replace("+", "%2B");
+    let q = query.replace("+", "%2B");
 
     format!(
         "http://api.wolframalpha.com/v1/result?appid={}&i={}&units=metric",
-        wolfram_app_id, query
+        wolfram_app_id, q
     ).parse::<reqwest::Url>()
         .ok()
         .and_then(|uri| reqwest::get(uri).ok())
         .and_then(|mut resp| resp.text().ok())
         .map(|t| {
             vec![
-                t.chars().take(300).collect::<String>() + " "
+                query.to_owned() + " ⇒ " + &t.chars().take(300).collect::<String>() + " "
                     + &format!(
                         "http://api.wolframalpha.com/v1/simple?appid={}&i={}&units=metric",
-                        wolfram_app_id, query
+                        wolfram_app_id, q
                     ).parse::<reqwest::Url>()
                         .ok()
                         .and_then(|uri| reqwest::get(uri).ok())
@@ -249,7 +290,7 @@ fn search_wolfram(query: &str, wolfram_app_id: &str, imgur_client_id: &str) -> O
                                 .multipart(
                                     reqwest::multipart::Form::new()
                                         .text("image", img)
-                                        .text("title", query.to_owned()),
+                                        .text("title", q.to_owned()),
                                 )
                                 .send()
                                 .ok()
@@ -261,7 +302,6 @@ fn search_wolfram(query: &str, wolfram_app_id: &str, imgur_client_id: &str) -> O
         })
         .or_else(|| Some(vec![]))
 }
-
 fn join<T, U>(e: (Option<T>, Option<U>)) -> Option<(T, U)> {
     match e {
         (Some(t), Some(u)) => Some((t, u)),
