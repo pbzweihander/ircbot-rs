@@ -2,6 +2,7 @@ extern crate airkorea;
 extern crate base64;
 extern crate daumdic;
 extern crate daummap;
+extern crate futures;
 extern crate irc;
 #[macro_use]
 extern crate lazy_static;
@@ -10,12 +11,17 @@ extern crate reqwest;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
+extern crate tokio_core;
 
+use futures::prelude::*;
+use futures::future::ok;
+use futures::stream;
 use irc::client::prelude::*;
 use regex::Regex;
+use reqwest::unstable::async as request;
+use tokio_core::reactor::{Core, Handle};
 
 use std::env::args;
-use std::io::Read;
 use std::path::PathBuf;
 use std::thread;
 use std::sync::mpsc::{channel, Sender};
@@ -56,20 +62,28 @@ fn main() {
                     .and_then(|_| {
                         let client = client.clone();
                         let (tx, rx) = channel::<(String, String)>();
+
                         thread::Builder::new()
                             .name("wolfram".to_owned())
                             .spawn(move || {
-                                rx.iter().for_each(|(channel, query)| {
-                                    search_wolfram_real(
-                                        &query,
-                                        get_wolfram_app_id!(CONFIG),
-                                        get_imgur_client_id!(CONFIG),
-                                    ).map(|msgs| {
-                                        msgs.into_iter().for_each(|m| {
-                                            client.send_privmsg(&channel, &m).unwrap();
-                                        })
-                                    });
-                                })
+                                let mut core = Core::new().unwrap();
+                                let handle = core.handle();
+
+                                for (channel, query) in rx.iter() {
+                                    let future =
+                                        search_wolfram_real(
+                                            &handle,
+                                            &query,
+                                            get_wolfram_app_id!(CONFIG),
+                                            get_imgur_client_id!(CONFIG),
+                                        ).map(|msgs| {
+                                            msgs.into_iter().for_each(|m| {
+                                                client.send_privmsg(&channel, &m).unwrap();
+                                            })
+                                        });
+
+                                    core.run(future).unwrap();
+                                }
                             })
                             .map(|_| tx)
                             .map_err(|e| e.into())
@@ -79,7 +93,7 @@ fn main() {
                             let tx = tx.clone();
                             match msg.command {
                                 Command::PRIVMSG(channel, message) => {
-                                    process_message(&channel, &message, tx)
+                                    process_message(&channel, &message, &tx)
                                         .map(|v| {
                                             if v.is_empty() {
                                                 vec!["._.".to_owned()]
@@ -124,7 +138,7 @@ fn main() {
 fn process_message(
     channel: &str,
     message: &str,
-    wolfram_tx: Sender<(String, String)>,
+    wolfram_tx: &Sender<(String, String)>,
 ) -> Option<Vec<String>> {
     parse_dic(message)
         .and_then(|word| search_dic(&word))
@@ -235,19 +249,20 @@ fn search_air(command: &str, query: &str, app_key: &str) -> Option<Vec<String>> 
 fn search_wolfram(
     channel: &str,
     query: &str,
-    wolfram_tx: Sender<(String, String)>,
+    wolfram_tx: &Sender<(String, String)>,
 ) -> Option<Vec<String>> {
     wolfram_tx
         .send((channel.to_owned(), query.to_owned()))
-        .unwrap();
-    Some(vec!["Wolfram|Alpha 검색 중...".to_owned()])
+        .map(|_| vec!["Wolfram|Alpha 검색 중...".to_owned()])
+        .ok()
 }
 
 fn search_wolfram_real(
+    handle: &Handle,
     query: &str,
     wolfram_app_id: &str,
     imgur_client_id: &str,
-) -> Option<Vec<String>> {
+) -> Box<Future<Item = Vec<String>, Error = ()>> {
     #[derive(Deserialize)]
     struct ImgurResponse {
         data: ImgurResponseData,
@@ -257,51 +272,70 @@ fn search_wolfram_real(
         link: String,
     }
 
-    let q = query.replace("+", "%2B");
+    let query_for_url = query.replace("+", "%2B");
+    let q1 = query.to_owned();
+    let q2 = query.to_owned();
+    let imgur_client_id = imgur_client_id.to_owned();
+    let h1 = handle.clone();
+    let h2 = handle.clone();
+    let h3 = handle.clone();
 
-    format!(
-        "http://api.wolframalpha.com/v1/result?appid={}&i={}&units=metric",
-        wolfram_app_id, q
-    ).parse::<reqwest::Url>()
-        .ok()
-        .and_then(|uri| reqwest::get(uri).ok())
-        .and_then(|mut resp| resp.text().ok())
-        .map(|t| {
-            vec![
-                query.to_owned() + " ⇒ " + &t.chars().take(300).collect::<String>() + " "
-                    + &format!(
-                        "http://api.wolframalpha.com/v1/simple?appid={}&i={}&units=metric",
-                        wolfram_app_id, q
-                    ).parse::<reqwest::Url>()
-                        .ok()
-                        .and_then(|uri| reqwest::get(uri).ok())
-                        .and_then(|mut resp| {
-                            let mut buf = vec![];
-                            resp.read_to_end(&mut buf).ok().map(|_| buf)
-                        })
-                        .map(|img| base64::encode(&img))
-                        .and_then(|img| {
-                            reqwest::Client::new()
-                                .post("https://api.imgur.com/3/image")
-                                .header(reqwest::header::Authorization(format!(
-                                    "Client-ID {}",
-                                    imgur_client_id
-                                )))
-                                .multipart(
-                                    reqwest::multipart::Form::new()
-                                        .text("image", img)
-                                        .text("title", q.to_owned()),
-                                )
-                                .send()
-                                .ok()
-                        })
-                        .and_then(|mut resp| resp.json::<ImgurResponse>().ok())
-                        .map(|resp| resp.data.link)
-                        .unwrap_or_default(),
-            ]
-        })
-        .or_else(|| Some(vec![]))
+    Box::new(
+        format!(
+            "http://api.wolframalpha.com/v1/result?appid={}&i={}&units=metric",
+            wolfram_app_id, query_for_url
+        ).parse::<reqwest::Url>()
+            .map_err(|_| ())
+            .into_future()
+            .and_then(move |uri| request::Client::new(&h1).get(uri).send().map_err(|_| ()))
+            .and_then(|resp| {
+                resp.into_body()
+                    .map_err(|_| ())
+                    .map(|chunk| stream::iter_ok::<_, ()>(chunk.into_iter()))
+                    .flatten()
+                    .take(300)
+                    .collect()
+            })
+            .and_then(|v| String::from_utf8(v).map_err(|_| ()).into_future())
+            .join(
+                format!(
+                    "http://api.wolframalpha.com/v1/simple?appid={}&i={}&units=metric",
+                    wolfram_app_id, query_for_url
+                ).parse::<reqwest::Url>()
+                    .map_err(|_| ())
+                    .into_future()
+                    .and_then(move |uri| request::Client::new(&h2).get(uri).send().map_err(|_| ()))
+                    .and_then(|resp| {
+                        resp.into_body()
+                            .map_err(|_| ())
+                            .map(|chunk| stream::iter_ok::<_, ()>(chunk.into_iter()))
+                            .flatten()
+                            .collect()
+                    })
+                    .map(|img| base64::encode(&img))
+                    .and_then(move |img| {
+                        request::Client::new(&h3)
+                            .post("https://api.imgur.com/3/image")
+                            .header(reqwest::header::Authorization(format!(
+                                "Client-ID {}",
+                                imgur_client_id
+                            )))
+                            .multipart(
+                                reqwest::multipart::Form::new()
+                                    .text("image", img)
+                                    .text("title", q1),
+                            )
+                            .send()
+                            .map_err(|_| ())
+                    })
+                    .and_then(|mut resp| resp.json::<ImgurResponse>().map_err(|_| ()))
+                    .map(|resp| resp.data.link),
+            )
+            .map(move |(simple, url)| vec![q2 + " ⇒ " + &simple + " " + &url])
+            .or_else(|_| ok(vec![])),
+    )
 }
+
 fn join<T, U>(e: (Option<T>, Option<U>)) -> Option<(T, U)> {
     match e {
         (Some(t), Some(u)) => Some((t, u)),
