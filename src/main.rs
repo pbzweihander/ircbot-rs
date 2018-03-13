@@ -16,15 +16,14 @@ extern crate tokio_core;
 use futures::prelude::*;
 use futures::future::ok;
 use futures::stream;
+use futures::sync::mpsc::{channel, Sender};
 use irc::client::prelude::*;
 use regex::Regex;
 use reqwest::unstable::async as request;
-use tokio_core::reactor::{Core, Handle};
+use tokio_core::reactor::Handle;
 
 use std::env::args;
 use std::path::PathBuf;
-use std::thread;
-use std::sync::mpsc::{channel, Sender};
 
 lazy_static! {
     static ref CONFIG_PATH: PathBuf =
@@ -59,41 +58,51 @@ fn main() {
             .and_then(|client| {
                 client
                     .identify()
-                    .and_then(|_| {
+                    .map(|_| {
                         let client = client.clone();
-                        let (tx, rx) = channel::<(String, String)>();
+                        let handle = reactor.inner_handle();
+                        let (tx, rx) = channel::<(String, String)>(5);
 
-                        thread::Builder::new()
-                            .name("wolfram".to_owned())
-                            .spawn(move || {
-                                let mut core = Core::new().unwrap();
-                                let handle = core.handle();
-
-                                for (channel, query) in rx.iter() {
-                                    let future =
-                                        search_wolfram_real(
-                                            &handle,
-                                            &query,
-                                            get_wolfram_app_id!(CONFIG),
-                                            get_imgur_client_id!(CONFIG),
-                                        ).map(|msgs| {
-                                            msgs.into_iter().for_each(|m| {
-                                                client.send_privmsg(&channel, &m).unwrap();
-                                            })
-                                        });
-
-                                    core.run(future).unwrap();
-                                }
+                        reactor.register_future(rx.map_err(|_| {
+                            irc::error::IrcError::from(std::io::Error::from(
+                                std::io::ErrorKind::Other,
+                            ))
+                        }).for_each(move |(channel, query)| {
+                            let client = client.clone();
+                            search_wolfram_real(
+                                &handle,
+                                &query,
+                                get_wolfram_app_id!(CONFIG),
+                                get_imgur_client_id!(CONFIG),
+                            ).map_err(|_| {
+                                irc::error::IrcError::from(std::io::Error::from(
+                                    std::io::ErrorKind::Other,
+                                ))
                             })
-                            .map(|_| tx)
-                            .map_err(|e| e.into())
+                                .and_then(move |msgs| {
+                                    msgs.into_iter()
+                                        .map(|m| client.send_privmsg(&channel, &m))
+                                        .fold(
+                                            Ok(()),
+                                            |acc, res| {
+                                                if res.is_ok() {
+                                                    acc
+                                                } else {
+                                                    res
+                                                }
+                                            },
+                                        )
+                                })
+                        }));
+
+                        tx
                     })
                     .and_then(|tx| {
                         reactor.register_client_with_handler(client, move |client, msg| {
                             let tx = tx.clone();
                             match msg.command {
                                 Command::PRIVMSG(channel, message) => {
-                                    process_message(&channel, &message, &tx)
+                                    process_message(&channel, &message, tx)
                                         .map(|v| {
                                             if v.is_empty() {
                                                 vec!["._.".to_owned()]
@@ -138,7 +147,7 @@ fn main() {
 fn process_message(
     channel: &str,
     message: &str,
-    wolfram_tx: &Sender<(String, String)>,
+    wolfram_tx: Sender<(String, String)>,
 ) -> Option<Vec<String>> {
     parse_dic(message)
         .and_then(|word| search_dic(&word))
@@ -249,11 +258,12 @@ fn search_air(command: &str, query: &str, app_key: &str) -> Option<Vec<String>> 
 fn search_wolfram(
     channel: &str,
     query: &str,
-    wolfram_tx: &Sender<(String, String)>,
+    wolfram_tx: Sender<(String, String)>,
 ) -> Option<Vec<String>> {
     wolfram_tx
         .send((channel.to_owned(), query.to_owned()))
         .map(|_| vec!["Wolfram|Alpha 검색 중...".to_owned()])
+        .wait()
         .ok()
 }
 
