@@ -13,8 +13,8 @@ extern crate serde;
 extern crate serde_derive;
 extern crate tokio_core;
 
-use futures::prelude::*;
 use futures::future::ok;
+use futures::prelude::*;
 use futures::stream;
 use futures::sync::mpsc::{channel, Sender};
 use irc::client::prelude::*;
@@ -34,19 +34,19 @@ lazy_static! {
 macro_rules! get_daummap_app_key {
     ($config:expr) => {
         $config.get_option("daummap_app_key")
-    }
+    };
 }
 
 macro_rules! get_wolfram_app_id {
     ($config:expr) => {
         $config.get_option("wolfram_app_id")
-    }
+    };
 }
 
 macro_rules! get_imgur_client_id {
     ($config:expr) => {
         $config.get_option("imgur_client_id")
-    }
+    };
 }
 
 fn main() {
@@ -101,21 +101,20 @@ fn main() {
                         reactor.register_client_with_handler(client, move |client, msg| {
                             let tx = tx.clone();
                             match msg.command {
-                                Command::PRIVMSG(channel, message) => {
-                                    process_message(&channel, &message, tx)
-                                        .map(|v| {
-                                            if v.is_empty() {
-                                                vec!["._.".to_owned()]
-                                            } else {
-                                                v
-                                            }
-                                        })
-                                        .unwrap_or_default()
-                                        .into_iter()
-                                        .for_each(|m| {
-                                            client.send_privmsg(&channel, &m).unwrap();
-                                        })
-                                }
+                                Command::PRIVMSG(channel, message) => process_message(
+                                    &channel, &message, tx,
+                                ).map(|v| {
+                                    if v.is_empty() {
+                                        vec!["._.".to_owned()]
+                                    } else {
+                                        v
+                                    }
+                                })
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .for_each(|m| {
+                                        client.send_privmsg(&channel, &m).unwrap();
+                                    }),
                                 Command::INVITE(nickname, channel) => {
                                     if nickname == client.current_nickname() {
                                         client.send_join(&channel).unwrap();
@@ -163,8 +162,7 @@ fn process_message(
 
 fn parse_dic(message: &str) -> Option<String> {
     lazy_static! {
-        static ref REGEX_DIC: Regex =
-            Regex::new(r"^[dD](?:ic)? (.+)$").unwrap();
+        static ref REGEX_DIC: Regex = Regex::new(r"^[dD](?:ic)? (.+)$").unwrap();
     }
     REGEX_DIC
         .captures(message)
@@ -186,8 +184,7 @@ fn parse_air(message: &str) -> Option<(String, String)> {
 
 fn parse_wolfram(message: &str) -> Option<String> {
     lazy_static! {
-        static ref REGEX_WOLFRAM: Regex =
-            Regex::new(r"^[wW](?:olfram)? (.+)$").unwrap();
+        static ref REGEX_WOLFRAM: Regex = Regex::new(r"^[wW](?:olfram)? (.+)$").unwrap();
     }
     REGEX_WOLFRAM
         .captures(message)
