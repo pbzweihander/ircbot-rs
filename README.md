@@ -16,3 +16,17 @@ Persional IRC bot written in Rust.
 <bot> Wolfram|Alpha 검색 중...
 <bot> integral sqrt tan x ⇒ (-2 tan^(-1)(1 - sqrt(2) sqrt(tan(x))) + 2 tan^(-1)(sqrt(2) sqrt(tan(x)) + 1) + log(tan(x) - sqrt(2) sqrt(tan(x)) + 1) - log(tan(x) + sqrt(2) sqrt(tan(x)) + 1))/(2 sqrt(2)) https://i.imgur.com/l7jTcPu.gif
 ```
+
+## Docker
+
+build with docker
+
+```bash
+docker build -t ircbot .
+```
+
+run with docker
+
+```bash
+docker run -it -v $PWD/config.toml:/etc/ircbot/config.toml --name ircbot ircbot
+```
