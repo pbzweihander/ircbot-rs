@@ -1,10 +1,10 @@
-FROM rust:latest
-
+FROM rust:1
 WORKDIR /usr/src/ircbot
-
 COPY . .
-COPY ./config.toml /etc/ircbot/config.toml
+RUN cargo build --release
 
-RUN cargo install --path .
+FROM bitnami/minideb:stretch
+COPY --from=0 /usr/src/ircbot/target/release/ircbot /ircbot
+COPY ./config.toml /config.toml
 
-CMD [ "ircbot", "/etc/ircbot/config.toml" ]
+CMD [ "/ircbot", "/config.toml" ]
