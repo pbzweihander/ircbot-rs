@@ -11,8 +11,10 @@ extern crate reqwest;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
+extern crate failure;
 extern crate tokio_core;
 
+use failure::Error;
 use futures::future::ok;
 use futures::prelude::*;
 use futures::stream;
@@ -24,6 +26,8 @@ use tokio_core::reactor::Handle;
 
 use std::env::args;
 use std::path::PathBuf;
+
+type Result<T> = std::result::Result<T, failure::Error>;
 
 lazy_static! {
     static ref CONFIG_PATH: PathBuf =
@@ -49,98 +53,107 @@ macro_rules! get_imgur_client_id {
     };
 }
 
-fn main() {
-    let mut reactor = IrcReactor::new().unwrap();
-
-    loop {
-        match reactor
-            .prepare_client_and_connect(&CONFIG)
-            .and_then(|client| {
-                client
-                    .identify()
-                    .map(|_| {
-                        let client = client.clone();
-                        let handle = reactor.inner_handle();
-                        let (tx, rx) = channel::<(String, String)>(5);
-
-                        reactor.register_future(rx.map_err(|_| {
-                            irc::error::IrcError::from(std::io::Error::from(
-                                std::io::ErrorKind::Other,
-                            ))
-                        }).for_each(move |(channel, query)| {
+fn main() -> Result<()> {
+    IrcReactor::new()
+        .map_err::<Error, _>(|e| e.into())
+        .and_then(|mut reactor| {
+            reactor
+                .prepare_client_and_connect(&CONFIG)
+                .and_then(|client| {
+                    client
+                        .identify()
+                        .map(|_| {
                             let client = client.clone();
-                            search_wolfram_real(
-                                &handle,
-                                &query,
-                                get_wolfram_app_id!(CONFIG),
-                                get_imgur_client_id!(CONFIG),
-                            ).map_err(|_| {
-                                irc::error::IrcError::from(std::io::Error::from(
-                                    std::io::ErrorKind::Other,
-                                ))
-                            })
-                                .and_then(move |msgs| {
-                                    msgs.into_iter()
-                                        .map(|m| client.send_privmsg(&channel, &m))
-                                        .fold(
-                                            Ok(()),
-                                            |acc, res| {
-                                                if res.is_ok() {
-                                                    acc
-                                                } else {
-                                                    res
-                                                }
-                                            },
-                                        )
-                                })
-                        }));
+                            let handle = reactor.inner_handle();
+                            let (tx, rx) = channel::<(String, String)>(5);
 
-                        tx
-                    })
-                    .and_then(|tx| {
-                        reactor.register_client_with_handler(client, move |client, msg| {
-                            let tx = tx.clone();
-                            match msg.command {
-                                Command::PRIVMSG(channel, message) => process_message(
-                                    &channel, &message, tx,
-                                ).map(|v| {
-                                    if v.is_empty() {
-                                        vec!["._.".to_owned()]
-                                    } else {
-                                        v
+                            reactor.register_future(
+                                rx.for_each(move |(channel, query)| {
+                                    let client = client.clone();
+                                    search_wolfram_real(
+                                        &handle,
+                                        &query,
+                                        get_wolfram_app_id!(CONFIG),
+                                        get_imgur_client_id!(CONFIG),
+                                    ).map_err(|e| {
+                                        irc::error::IrcError::Io(std::io::Error::new(
+                                            std::io::ErrorKind::Other,
+                                            e.compat(),
+                                        ))
+                                    })
+                                        .and_then(move |msgs| {
+                                            msgs.into_iter()
+                                                .map(|m| client.send_privmsg(&channel, &m))
+                                                .fold(
+                                                    Ok(()),
+                                                    |acc, res| {
+                                                        if res.is_ok() {
+                                                            acc
+                                                        } else {
+                                                            res
+                                                        }
+                                                    },
+                                                )
+                                        })
+                                        .map_err(|e| {
+                                            eprintln!("{}", e);
+                                            ()
+                                        })
+                                }).map_err(|_| {
+                                    irc::error::IrcError::Io(std::io::Error::from(
+                                        std::io::ErrorKind::Other,
+                                    ))
+                                }),
+                            );
+
+                            tx
+                        })
+                        .and_then(|tx| {
+                            reactor.register_client_with_handler(client, move |client, msg| {
+                                let tx = tx.clone();
+                                match msg.command {
+                                    Command::PRIVMSG(channel, message) => process_message(
+                                        &channel, &message, tx,
+                                    ).map(|v| {
+                                        if v.is_empty() {
+                                            vec!["._.".to_owned()]
+                                        } else {
+                                            v
+                                        }
+                                    })
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .for_each(|m| {
+                                            client.send_privmsg(&channel, &m).unwrap();
+                                        }),
+                                    Command::INVITE(nickname, channel) => {
+                                        if nickname == client.current_nickname() {
+                                            client.send_join(&channel).unwrap();
+                                            let mut config = Config::load(&*CONFIG_PATH).unwrap();
+                                            config.channels.as_mut().unwrap().push(channel);
+                                            config.save(&*CONFIG_PATH).unwrap();
+                                        }
                                     }
-                                })
-                                    .unwrap_or_default()
-                                    .into_iter()
-                                    .for_each(|m| {
-                                        client.send_privmsg(&channel, &m).unwrap();
-                                    }),
-                                Command::INVITE(nickname, channel) => {
-                                    if nickname == client.current_nickname() {
-                                        client.send_join(&channel).unwrap();
-                                        let mut config = Config::load(&*CONFIG_PATH).unwrap();
-                                        config.channels.as_mut().unwrap().push(channel);
-                                        config.save(&*CONFIG_PATH).unwrap();
+                                    Command::KICK(channel, nickname, _) => {
+                                        if nickname == client.current_nickname() {
+                                            let mut config = Config::load(&*CONFIG_PATH).unwrap();
+                                            config
+                                                .channels
+                                                .as_mut()
+                                                .unwrap()
+                                                .retain(|c| c != &channel);
+                                            config.save(&*CONFIG_PATH).unwrap();
+                                        }
                                     }
-                                }
-                                Command::KICK(channel, nickname, _) => {
-                                    if nickname == client.current_nickname() {
-                                        let mut config = Config::load(&*CONFIG_PATH).unwrap();
-                                        config.channels.as_mut().unwrap().retain(|c| c != &channel);
-                                        config.save(&*CONFIG_PATH).unwrap();
-                                    }
-                                }
-                                _ => (),
-                            };
-                            Ok(())
-                        });
-                        reactor.run()
-                    })
-            }) {
-            Ok(_) => break,
-            Err(e) => eprintln!("{}", e),
-        }
-    }
+                                    _ => (),
+                                };
+                                Ok(())
+                            });
+                            reactor.run()
+                        })
+                })
+                .map_err(|e| e.into())
+        })
 }
 
 fn process_message(
@@ -269,7 +282,7 @@ fn search_wolfram_real(
     query: &str,
     wolfram_app_id: &str,
     imgur_client_id: &str,
-) -> Box<Future<Item = Vec<String>, Error = ()>> {
+) -> impl Future<Item = Vec<String>, Error = Error> {
     #[derive(Deserialize)]
     struct ImgurResponse {
         data: ImgurResponseData,
@@ -287,60 +300,68 @@ fn search_wolfram_real(
     let h2 = handle.clone();
     let h3 = handle.clone();
 
-    Box::new(
-        format!(
-            "http://api.wolframalpha.com/v1/result?appid={}&i={}&units=metric",
-            wolfram_app_id, query_for_url
-        ).parse::<reqwest::Url>()
-            .map_err(|_| ())
-            .into_future()
-            .and_then(move |uri| request::Client::new(&h1).get(uri).send().map_err(|_| ()))
-            .and_then(|resp| {
-                resp.into_body()
-                    .map_err(|_| ())
-                    .map(|chunk| stream::iter_ok::<_, ()>(chunk.into_iter()))
-                    .flatten()
-                    .take(300)
-                    .collect()
-            })
-            .and_then(|v| String::from_utf8(v).map_err(|_| ()).into_future())
-            .join(
-                format!(
-                    "http://api.wolframalpha.com/v1/simple?appid={}&i={}&units=metric",
-                    wolfram_app_id, query_for_url
-                ).parse::<reqwest::Url>()
-                    .map_err(|_| ())
-                    .into_future()
-                    .and_then(move |uri| request::Client::new(&h2).get(uri).send().map_err(|_| ()))
-                    .and_then(|resp| {
-                        resp.into_body()
-                            .map_err(|_| ())
-                            .map(|chunk| stream::iter_ok::<_, ()>(chunk.into_iter()))
-                            .flatten()
-                            .collect()
-                    })
-                    .map(|img| base64::encode(&img))
-                    .and_then(move |img| {
-                        request::Client::new(&h3)
-                            .post("https://api.imgur.com/3/image")
-                            .header(reqwest::header::Authorization(format!(
-                                "Client-ID {}",
-                                imgur_client_id
-                            )))
-                            .multipart(
-                                reqwest::multipart::Form::new()
-                                    .text("image", img)
-                                    .text("title", q1),
-                            )
-                            .send()
-                            .map_err(|_| ())
-                    })
-                    .and_then(|mut resp| resp.json::<ImgurResponse>().map_err(|_| ()))
-                    .map(|resp| resp.data.link),
-            )
-            .map(move |(simple, url)| vec![q2 + " ⇒ " + &simple + " " + &url])
-            .or_else(|_| ok(vec![])),
-    )
+    format!(
+        "http://api.wolframalpha.com/v1/result?appid={}&i={}&units=metric",
+        wolfram_app_id, query_for_url
+    ).parse::<reqwest::Url>()
+        .map_err::<Error, _>(|e| e.into())
+        .into_future()
+        .and_then(move |uri| {
+            request::Client::new(&h1)
+                .get(uri)
+                .send()
+                .map_err(|e| e.into())
+        })
+        .and_then(|resp| {
+            resp.into_body()
+                .map_err::<Error, _>(|e| e.into())
+                .map(|chunk| stream::iter_ok::<_, Error>(chunk.into_iter()))
+                .flatten()
+                .take(300)
+                .collect()
+        })
+        .and_then(|v| String::from_utf8(v).map_err(|e| e.into()).into_future())
+        .join(
+            format!(
+                "http://api.wolframalpha.com/v1/simple?appid={}&i={}&units=metric",
+                wolfram_app_id, query_for_url
+            ).parse::<reqwest::Url>()
+                .map_err::<Error, _>(|e| e.into())
+                .into_future()
+                .and_then(move |uri| {
+                    request::Client::new(&h2)
+                        .get(uri)
+                        .send()
+                        .map_err(|e| e.into())
+                })
+                .and_then(|resp| {
+                    resp.into_body()
+                        .map_err::<Error, _>(|e| e.into())
+                        .map(|chunk| stream::iter_ok::<_, Error>(chunk.into_iter()))
+                        .flatten()
+                        .collect()
+                })
+                .map(|img| base64::encode(&img))
+                .and_then(move |img| {
+                    request::Client::new(&h3)
+                        .post("https://api.imgur.com/3/image")
+                        .header(reqwest::header::Authorization(format!(
+                            "Client-ID {}",
+                            imgur_client_id
+                        )))
+                        .multipart(
+                            reqwest::multipart::Form::new()
+                                .text("image", img)
+                                .text("title", q1),
+                        )
+                        .send()
+                        .map_err(|e| e.into())
+                })
+                .and_then(|mut resp| resp.json::<ImgurResponse>().map_err(|e| e.into()))
+                .map(|resp| resp.data.link),
+        )
+        .map(move |(simple, url)| vec![q2 + " ⇒ " + &simple + " " + &url])
+        .or_else(|_| ok(vec![]))
 }
 
 fn join<T, U>(e: (Option<T>, Option<U>)) -> Option<(T, U)> {
