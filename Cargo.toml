@@ -5,8 +5,8 @@ authors = ["pbzweihander <sd852456@naver.com>"]
 
 [dependencies]
 irc = "0.13"
-daumdic = "0.3"
-regex = "0.2"
+daumdic = "0.4"
+regex = "1.0"
 lazy_static = "1.0"
 daummap = "0.1"
 airkorea = "0.1"
@@ -15,6 +15,7 @@ serde = "1.0"
 serde_derive = "1.0"
 futures = "0.1"
 tokio-core = "0.1"
+failure = "0.1"
 
 [dependencies.reqwest]
 git = "https://github.com/pbzweihander/reqwest.git"
