@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "ircbot"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "airkorea 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "base64 0.9.2 (registry+https://github.com/rust-lang/crates.io-index)",
