@@ -304,12 +304,14 @@ impl BotCommand {
     }
 }
 
-macro_rules! send_privmsgs {
-    ($c:ident, $h:expr, $m:expr) => {
-        $m.into_iter()
-            .map(|m| $c.send_privmsg($h, &m).map_err::<Error, _>(Into::into))
-            .fold(Ok(()), |acc, res| if res.is_ok() { acc } else { res })
-    };
+fn send_privmsgs(client: &IrcClient, channel: &str, msgs: Vec<String>) -> Result<()> {
+    msgs.into_iter()
+        .map(|m| {
+            client
+                .send_privmsg(channel, &m)
+                .map_err::<Error, _>(Into::into)
+        })
+        .fold(Ok(()), |acc, res| if res.is_ok() { acc } else { res })
 }
 
 fn wolfram_future(
@@ -326,7 +328,7 @@ fn wolfram_future(
             &query,
             get_wolfram_app_id!(CONFIG),
             get_imgur_client_id!(CONFIG),
-        ).and_then(move |msgs| send_privmsgs!(client, &channel, msgs).map_err(Into::into))
+        ).and_then(move |msgs| send_privmsgs(&client, &channel, msgs).map_err(Into::into))
             .map_err(|e| {
                 eprintln!("{}", e);
                 ()
@@ -350,7 +352,7 @@ fn process_privmsg(
             }
         })
         .unwrap_or_default();
-    send_privmsgs!(client, &channel, msgs)
+    send_privmsgs(client, &channel, msgs)
 }
 
 fn process_invite(client: &IrcClient, channel: &str, nickname: &str) -> Result<()> {
