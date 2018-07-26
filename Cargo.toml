@@ -21,3 +21,7 @@ failure = "0.1"
 git = "https://github.com/pbzweihander/reqwest.git"
 branch = "async-multipart"
 features = [ "unstable" ]
+
+[profile.release]
+lto = true
+panic = 'abort'
