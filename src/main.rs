@@ -53,155 +53,46 @@ macro_rules! get_imgur_client_id {
     };
 }
 
-fn main() -> Result<()> {
-    IrcReactor::new()
-        .map_err::<Error, _>(|e| e.into())
-        .and_then(|mut reactor| {
-            reactor
-                .prepare_client_and_connect(&CONFIG)
-                .and_then(|client| {
-                    client
-                        .identify()
-                        .map(|_| {
-                            let client = client.clone();
-                            let handle = reactor.inner_handle();
-                            let (tx, rx) = channel::<(String, String)>(5);
-
-                            reactor.register_future(
-                                rx.for_each(move |(channel, query)| {
-                                    let client = client.clone();
-                                    search_wolfram_real(
-                                        &handle,
-                                        &query,
-                                        get_wolfram_app_id!(CONFIG),
-                                        get_imgur_client_id!(CONFIG),
-                                    ).map_err(|e| {
-                                        irc::error::IrcError::Io(std::io::Error::new(
-                                            std::io::ErrorKind::Other,
-                                            e.compat(),
-                                        ))
-                                    })
-                                        .and_then(move |msgs| {
-                                            msgs.into_iter()
-                                                .map(|m| client.send_privmsg(&channel, &m))
-                                                .fold(
-                                                    Ok(()),
-                                                    |acc, res| {
-                                                        if res.is_ok() {
-                                                            acc
-                                                        } else {
-                                                            res
-                                                        }
-                                                    },
-                                                )
-                                        })
-                                        .map_err(|e| {
-                                            eprintln!("{}", e);
-                                            ()
-                                        })
-                                }).map_err(|_| {
-                                    irc::error::IrcError::Io(std::io::Error::from(
-                                        std::io::ErrorKind::Other,
-                                    ))
-                                }),
-                            );
-
-                            tx
-                        })
-                        .and_then(|tx| {
-                            reactor.register_client_with_handler(client, move |client, msg| {
-                                let tx = tx.clone();
-                                match msg.command {
-                                    Command::PRIVMSG(channel, message) => process_message(
-                                        &channel, &message, tx,
-                                    ).map(|v| {
-                                        if v.is_empty() {
-                                            vec!["._.".to_owned()]
-                                        } else {
-                                            v
-                                        }
-                                    })
-                                        .unwrap_or_default()
-                                        .into_iter()
-                                        .for_each(|m| {
-                                            client.send_privmsg(&channel, &m).unwrap();
-                                        }),
-                                    Command::INVITE(nickname, channel) => {
-                                        if nickname == client.current_nickname() {
-                                            client.send_join(&channel).unwrap();
-                                            let mut config = Config::load(&*CONFIG_PATH).unwrap();
-                                            config.channels.as_mut().unwrap().push(channel);
-                                            config.save(&*CONFIG_PATH).unwrap();
-                                        }
-                                    }
-                                    Command::KICK(channel, nickname, _) => {
-                                        if nickname == client.current_nickname() {
-                                            let mut config = Config::load(&*CONFIG_PATH).unwrap();
-                                            config
-                                                .channels
-                                                .as_mut()
-                                                .unwrap()
-                                                .retain(|c| c != &channel);
-                                            config.save(&*CONFIG_PATH).unwrap();
-                                        }
-                                    }
-                                    _ => (),
-                                };
-                                Ok(())
-                            });
-                            reactor.run()
-                        })
-                })
-                .map_err(|e| e.into())
-        })
+fn join<T, U>(e: (Option<T>, Option<U>)) -> Option<(T, U)> {
+    match e {
+        (Some(t), Some(u)) => Some((t, u)),
+        _ => None,
+    }
 }
 
-fn process_message(
-    channel: &str,
-    message: &str,
-    wolfram_tx: Sender<(String, String)>,
-) -> Option<Vec<String>> {
-    parse_dic(message)
-        .and_then(|word| search_dic(&word))
-        .or_else(|| {
-            parse_air(message).and_then(|(command, query)| {
-                search_air(&command, &query, get_daummap_app_key!(CONFIG))
+fn get_coord_from_address(address: &daummap::Address) -> Option<(f32, f32)> {
+    address
+        .land_lot
+        .as_ref()
+        .map(|land_lot| (land_lot.longitude, land_lot.latitude))
+        .and_then(join)
+}
+
+fn get_coord_from_place(place: &daummap::Place) -> Option<(f32, f32)> {
+    join((place.longitude, place.latitude))
+}
+
+fn format_pollutant_with_name(pollutant: &airkorea::Pollutant) -> String {
+    format!(
+        "{} ({}): {} ({})",
+        pollutant.name,
+        pollutant.unit,
+        (&pollutant.level_by_time)
+            .into_iter()
+            .map(|l| match *l {
+                Some(f) => f.to_string(),
+                None => String::new(),
             })
-        })
-        .or_else(|| {
-            parse_wolfram(message).and_then(|query| search_wolfram(channel, &query, wolfram_tx))
-        })
-}
-
-fn parse_dic(message: &str) -> Option<String> {
-    lazy_static! {
-        static ref REGEX_DIC: Regex = Regex::new(r"^[dD](?:ic)? (.+)$").unwrap();
-    }
-    REGEX_DIC
-        .captures(message)
-        .map(|c| c.get(1).unwrap().as_str().to_owned())
-}
-
-fn parse_air(message: &str) -> Option<(String, String)> {
-    lazy_static! {
-        static ref REGEX_AIR: Regex =
-            Regex::new(r"^(air|pm|pm10|pm25|o3|so2|no2|co|so2) (.+)$").unwrap();
-    }
-    REGEX_AIR.captures(message).map(|c| {
-        (
-            c.get(1).unwrap().as_str().to_owned(),
-            c.get(2).unwrap().as_str().to_owned(),
-        )
-    })
-}
-
-fn parse_wolfram(message: &str) -> Option<String> {
-    lazy_static! {
-        static ref REGEX_WOLFRAM: Regex = Regex::new(r"^[wW](?:olfram)? (.+)$").unwrap();
-    }
-    REGEX_WOLFRAM
-        .captures(message)
-        .map(|c| c.get(1).unwrap().as_str().to_owned())
+            .collect::<Vec<String>>()
+            .join(" → "),
+        match pollutant.grade {
+            airkorea::Grade::None => "정보 없음",
+            airkorea::Grade::Good => "좋음",
+            airkorea::Grade::Normal => "보통",
+            airkorea::Grade::Bad => "나쁨",
+            airkorea::Grade::Critical => "매우 나쁨",
+        }
+    )
 }
 
 fn search_dic(query: &str) -> Option<Vec<String>> {
@@ -364,44 +255,162 @@ fn search_wolfram_real(
         .or_else(|_| ok(vec![]))
 }
 
-fn join<T, U>(e: (Option<T>, Option<U>)) -> Option<(T, U)> {
-    match e {
-        (Some(t), Some(u)) => Some((t, u)),
-        _ => None,
+enum BotCommand {
+    Dictionary(String),
+    AirPollution(String, String),
+    WolframAlpha(String),
+}
+
+impl BotCommand {
+    fn from_str(message: &str) -> Option<Self> {
+        lazy_static! {
+            static ref REGEX_DIC: Regex = Regex::new(r"^[dD](?:ic)? (.+)$").unwrap();
+            static ref REGEX_AIR: Regex =
+                Regex::new(r"^(air|pm|pm10|pm25|o3|so2|no2|co|so2) (.+)$").unwrap();
+            static ref REGEX_WOLFRAM: Regex = Regex::new(r"^[wW](?:olfram)? (.+)$").unwrap();
+        }
+
+        REGEX_DIC
+            .captures(message)
+            .map(|c| c.get(1).unwrap().as_str().to_owned())
+            .map(|s| BotCommand::Dictionary(s))
+            .or_else(|| {
+                REGEX_AIR
+                    .captures(message)
+                    .map(|c| {
+                        (
+                            c.get(1).unwrap().as_str().to_owned(),
+                            c.get(2).unwrap().as_str().to_owned(),
+                        )
+                    })
+                    .map(|(s1, s2)| BotCommand::AirPollution(s1, s2))
+            })
+            .or_else(|| {
+                REGEX_WOLFRAM
+                    .captures(message)
+                    .map(|c| c.get(1).unwrap().as_str().to_owned())
+                    .map(|s| BotCommand::WolframAlpha(s))
+            })
+    }
+
+    fn process(self, channel: &str, wolfram_tx: Sender<(String, String)>) -> Option<Vec<String>> {
+        match self {
+            BotCommand::Dictionary(query) => search_dic(&query),
+            BotCommand::AirPollution(command, query) => {
+                search_air(&command, &query, get_daummap_app_key!(CONFIG))
+            }
+            BotCommand::WolframAlpha(query) => search_wolfram(channel, &query, wolfram_tx),
+        }
     }
 }
 
-fn get_coord_from_address(address: &daummap::Address) -> Option<(f32, f32)> {
-    address
-        .land_lot
-        .as_ref()
-        .map(|land_lot| (land_lot.longitude, land_lot.latitude))
-        .and_then(join)
+macro_rules! send_privmsgs {
+    ($c:ident, $h:expr, $m:expr) => {
+        $m.into_iter()
+            .map(|m| $c.send_privmsg($h, &m).map_err::<Error, _>(Into::into))
+            .fold(Ok(()), |acc, res| if res.is_ok() { acc } else { res })
+    };
 }
 
-fn get_coord_from_place(place: &daummap::Place) -> Option<(f32, f32)> {
-    join((place.longitude, place.latitude))
-}
-
-fn format_pollutant_with_name(pollutant: &airkorea::Pollutant) -> String {
-    format!(
-        "{} ({}): {} ({})",
-        pollutant.name,
-        pollutant.unit,
-        (&pollutant.level_by_time)
-            .into_iter()
-            .map(|l| match *l {
-                Some(f) => f.to_string(),
-                None => String::new(),
+fn wolfram_future(
+    handle: &Handle,
+    client: &IrcClient,
+    rx: futures::sync::mpsc::Receiver<(String, String)>,
+) -> impl Future<Item = (), Error = ()> + 'static {
+    let handle = handle.clone();
+    let client = client.clone();
+    rx.for_each(move |(channel, query)| {
+        let client = client.clone();
+        search_wolfram_real(
+            &handle,
+            &query,
+            get_wolfram_app_id!(CONFIG),
+            get_imgur_client_id!(CONFIG),
+        ).and_then(move |msgs| send_privmsgs!(client, &channel, msgs).map_err(Into::into))
+            .map_err(|e| {
+                eprintln!("{}", e);
+                ()
             })
-            .collect::<Vec<String>>()
-            .join(" → "),
-        match pollutant.grade {
-            airkorea::Grade::None => "정보 없음",
-            airkorea::Grade::Good => "좋음",
-            airkorea::Grade::Normal => "보통",
-            airkorea::Grade::Bad => "나쁨",
-            airkorea::Grade::Critical => "매우 나쁨",
+    })
+}
+
+fn process_privmsg(
+    client: &IrcClient,
+    channel: &str,
+    message: &str,
+    tx: futures::sync::mpsc::Sender<(String, String)>,
+) -> Result<()> {
+    let msgs = BotCommand::from_str(message)
+        .and_then(|c| c.process(channel, tx))
+        .map(|v| {
+            if v.is_empty() {
+                vec!["._.".to_owned()]
+            } else {
+                v
+            }
+        })
+        .unwrap_or_default();
+    send_privmsgs!(client, &channel, msgs)
+}
+
+fn process_invite(client: &IrcClient, channel: &str, nickname: &str) -> Result<()> {
+    if nickname == client.current_nickname() {
+        client
+            .send_join(&channel)
+            .and_then(|_| {
+                let mut config = Config::load(&*CONFIG_PATH).unwrap();
+                config.channels.as_mut().unwrap().push(channel.to_owned());
+                config.save(&*CONFIG_PATH)
+            })
+            .map_err(Into::into)
+    } else {
+        Ok(())
+    }
+}
+
+fn process_kick(client: &IrcClient, channel: &str, nickname: &str) -> Result<()> {
+    if nickname == client.current_nickname() {
+        Config::load(&*CONFIG_PATH)
+            .and_then(|mut config| {
+                config.channels.as_mut().unwrap().retain(|c| c != &channel);
+                config.save(&*CONFIG_PATH)
+            })
+            .map_err(Into::into)
+    } else {
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut reactor = IrcReactor::new()?;
+    let client = reactor.prepare_client_and_connect(&CONFIG)?;
+    let cloned_client = client.clone();
+    client.identify()?;
+    let handle = reactor.inner_handle();
+    let (tx, rx) = channel::<(String, String)>(5);
+
+    reactor
+        .register_future(wolfram_future(&handle, &cloned_client, rx).map_err(|_| {
+            irc::error::IrcError::Io(std::io::Error::from(std::io::ErrorKind::Other))
+        }));
+
+    reactor.register_client_with_handler(client, move |client, msg| {
+        let tx = tx.clone();
+        let result = match msg.command {
+            Command::PRIVMSG(channel, message) => process_privmsg(&client, &channel, &message, tx),
+            Command::INVITE(nickname, channel) => process_invite(&client, &channel, &nickname),
+            Command::KICK(channel, nickname, _) => process_kick(&client, &channel, &nickname),
+            _ => Ok(()),
+        };
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                eprintln!("{}", e.to_string());
+                Ok(())
+            }
         }
-    )
+    });
+    reactor.run()?;
+    Ok(())
 }
