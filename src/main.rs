@@ -99,13 +99,11 @@ fn search_dic(query: &str) -> Option<Vec<String>> {
     use std::iter::once;
 
     daumdic::search(query).ok().map(|res| {
-        let word = res.word;
+        let words = res.words;
         let alternatives = res.alternatives;
 
         let v: Vec<_> = once(alternatives.join(", "))
-            .chain(once(
-                word.map(|word| format!("{}", word)).unwrap_or_default(),
-            ))
+            .chain(words.into_iter().map(|w| format!("{}", w)))
             .filter(|s| !s.is_empty())
             .collect();
         v
