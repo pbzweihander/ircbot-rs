@@ -1,4 +1,7 @@
 
+/target/
+!/target/release/ircbot
+
 **/*.rs.bk
 
 /rls/
