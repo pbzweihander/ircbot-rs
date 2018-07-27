@@ -37,19 +37,28 @@ lazy_static! {
 
 macro_rules! get_daummap_app_key {
     ($config:expr) => {
-        $config.get_option("daummap_app_key")
+        $config
+            .options
+            .as_ref()
+            .and_then(|hm| hm.get("daummap_app_key"))
     };
 }
 
 macro_rules! get_wolfram_app_id {
     ($config:expr) => {
-        $config.get_option("wolfram_app_id")
+        $config
+            .options
+            .as_ref()
+            .and_then(|hm| hm.get("wolfram_app_id"))
     };
 }
 
 macro_rules! get_imgur_client_id {
     ($config:expr) => {
-        $config.get_option("imgur_client_id")
+        $config
+            .options
+            .as_ref()
+            .and_then(|hm| hm.get("imgur_client_id"))
     };
 }
 
@@ -273,8 +282,8 @@ impl BotCommand {
             .map(|c| c.get(1).unwrap().as_str().to_owned())
             .map(|s| BotCommand::Dictionary(s))
             .or_else(|| {
-                REGEX_AIR
-                    .captures(message)
+                get_daummap_app_key!(&CONFIG)
+                    .and_then(|_| REGEX_AIR.captures(message))
                     .map(|c| {
                         (
                             c.get(1).unwrap().as_str().to_owned(),
@@ -284,8 +293,8 @@ impl BotCommand {
                     .map(|(s1, s2)| BotCommand::AirPollution(s1, s2))
             })
             .or_else(|| {
-                REGEX_WOLFRAM
-                    .captures(message)
+                join((get_wolfram_app_id!(&CONFIG), get_imgur_client_id!(&CONFIG)))
+                    .and_then(|_| REGEX_WOLFRAM.captures(message))
                     .map(|c| c.get(1).unwrap().as_str().to_owned())
                     .map(|s| BotCommand::WolframAlpha(s))
             })
@@ -295,9 +304,12 @@ impl BotCommand {
         match self {
             BotCommand::Dictionary(query) => search_dic(&query),
             BotCommand::AirPollution(command, query) => {
-                search_air(&command, &query, get_daummap_app_key!(CONFIG))
+                get_daummap_app_key!(&CONFIG).and_then(|key| search_air(&command, &query, &key))
             }
-            BotCommand::WolframAlpha(query) => search_wolfram(channel, &query, wolfram_tx),
+            BotCommand::WolframAlpha(query) => {
+                join((get_wolfram_app_id!(&CONFIG), get_imgur_client_id!(&CONFIG)))
+                    .and_then(|_| search_wolfram(channel, &query, wolfram_tx))
+            }
         }
     }
 }
@@ -316,17 +328,17 @@ fn wolfram_future(
     handle: &Handle,
     client: &IrcClient,
     rx: futures::sync::mpsc::Receiver<(String, String)>,
+    wolfram_app_id: &str,
+    imgur_client_id: &str,
 ) -> impl Future<Item = (), Error = ()> + 'static {
     let handle = handle.clone();
     let client = client.clone();
+    let wolfram_app_id = wolfram_app_id.to_string();
+    let imgur_client_id = imgur_client_id.to_string();
     rx.for_each(move |(channel, query)| {
         let client = client.clone();
-        search_wolfram_real(
-            &handle,
-            &query,
-            get_wolfram_app_id!(CONFIG),
-            get_imgur_client_id!(CONFIG),
-        ).and_then(move |msgs| send_privmsgs(&client, &channel, msgs).map_err(Into::into))
+        search_wolfram_real(&handle, &query, &wolfram_app_id, &imgur_client_id)
+            .and_then(move |msgs| send_privmsgs(&client, &channel, msgs).map_err(Into::into))
             .map_err(|e| {
                 eprintln!("{}", e);
                 ()
@@ -389,10 +401,15 @@ fn main() -> Result<()> {
     let handle = reactor.inner_handle();
     let (tx, rx) = channel::<(String, String)>(5);
 
-    reactor
-        .register_future(wolfram_future(&handle, &cloned_client, rx).map_err(|_| {
-            irc::error::IrcError::Io(std::io::Error::from(std::io::ErrorKind::Other))
-        }));
+    if let (Some(ref wolfram_id), Some(ref imgur_id)) =
+        (get_wolfram_app_id!(&CONFIG), get_imgur_client_id!(&CONFIG))
+    {
+        reactor.register_future(
+            wolfram_future(&handle, &cloned_client, rx, wolfram_id, imgur_id).map_err(|_| {
+                irc::error::IrcError::Io(std::io::Error::from(std::io::ErrorKind::Other))
+            }),
+        );
+    }
 
     reactor.register_client_with_handler(client, move |client, msg| {
         let tx = tx.clone();
