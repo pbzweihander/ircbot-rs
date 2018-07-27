@@ -19,14 +19,6 @@ Persional IRC bot written in Rust.
 
 ## Docker
 
-build with docker
-
 ```bash
-docker build -t ircbot .
-```
-
-run with docker
-
-```bash
-docker run -it -v $PWD/config.toml:/etc/ircbot/config.toml --name ircbot ircbot
+docker run --rm -it -v $PWD/config.toml:/config.toml --name ircbot pbzweihander/ircbot:latest
 ```
