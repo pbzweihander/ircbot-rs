@@ -12,6 +12,7 @@ extern crate serde;
 #[macro_use]
 extern crate serde_derive;
 extern crate failure;
+extern crate openssl_probe;
 extern crate tokio_core;
 
 use failure::Error;
@@ -394,6 +395,8 @@ fn process_kick(client: &IrcClient, channel: &str, nickname: &str) -> Result<()>
 }
 
 fn main() -> Result<()> {
+    openssl_probe::init_ssl_cert_env_vars();
+
     let mut reactor = IrcReactor::new()?;
     let client = reactor.prepare_client_and_connect(&CONFIG)?;
     let cloned_client = client.clone();

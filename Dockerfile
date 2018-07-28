@@ -1,8 +1,7 @@
-FROM bitnami/minideb:stretch
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
 
-RUN install_packages libssl-dev ca-certificates
-
-COPY target/release/ircbot /ircbot
+COPY ircbot /ircbot
 COPY config.default.toml /config.toml
 
 CMD [ "/ircbot", "/config.toml" ]

@@ -1,6 +1,6 @@
 [package]
 name = "ircbot"
-version = "0.4.1"
+version = "0.4.2"
 authors = ["pbzweihander <sd852456@naver.com>"]
 
 [dependencies]
@@ -16,6 +16,7 @@ serde_derive = "1.0"
 futures = "0.1"
 tokio-core = "0.1"
 failure = "0.1"
+openssl-probe = "0.1"
 
 [dependencies.reqwest]
 git = "https://github.com/pbzweihander/reqwest.git"
