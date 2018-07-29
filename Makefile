@@ -10,7 +10,7 @@ compile:
 		-v $$PWD:/volume \
 		-w /volume \
 		-it clux/muslrust \
-		cargo build --release -v
+		cargo build --release
 	sudo chown $$USER:$$USER -R target
 	strip target/x86_64-unknown-linux-musl/release/ircbot
 	mv target/x86_64-unknown-linux-musl/release/ircbot .
