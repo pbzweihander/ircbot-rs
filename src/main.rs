@@ -82,19 +82,15 @@ fn get_coord_from_place(place: &daummap::Place) -> Option<(f32, f32)> {
     join((place.longitude, place.latitude))
 }
 
-fn format_pollutant_with_name(pollutant: &airkorea::Pollutant) -> String {
+fn format_pollutant_with_name(pollutant: airkorea::Pollutant) -> String {
     format!(
-        "{} ({}): {} ({})",
+        "{}: {}{} {}",
         pollutant.name,
+        pollutant
+            .level
+            .map(|f| f.to_string())
+            .unwrap_or("--".to_string()),
         pollutant.unit,
-        (&pollutant.level_by_time)
-            .into_iter()
-            .map(|l| match *l {
-                Some(f) => f.to_string(),
-                None => String::new(),
-            })
-            .collect::<Vec<String>>()
-            .join(" → "),
         match pollutant.grade {
             airkorea::Grade::None => "정보 없음",
             airkorea::Grade::Good => "좋음",
@@ -132,36 +128,36 @@ fn search_air(command: &str, query: &str, app_key: &str) -> Option<Vec<String>> 
                 .get()
                 .filter_map(|place| get_coord_from_place(&place))
                 .next()
-        })
-        .and_then(|(longitude, latitude)| airkorea::search(longitude, latitude).ok())
+        }).and_then(|(longitude, latitude)| airkorea::search(longitude, latitude).ok())
         .and_then(|status| {
             let station_address = status.station_address.clone();
             match command {
                 "air" => Some(
                     status
                         .into_iter()
-                        .map(|pollutant| format_pollutant_with_name(&pollutant))
+                        .map(format_pollutant_with_name)
                         .collect::<Vec<_>>(),
                 ),
                 "pm" => Some(
                     status
                         .into_iter()
-                        .take(2)
-                        .map(|pollutant| format_pollutant_with_name(&pollutant))
+                        .filter(|p| p.name.contains("PM"))
+                        .map(format_pollutant_with_name)
                         .collect::<Vec<_>>(),
                 ),
-                command => status
-                    .into_map()
-                    .get(command)
-                    .map(format_pollutant_with_name)
-                    .map(|res| vec![res]),
+                command => Some(
+                    status
+                        .into_iter()
+                        .filter(|p| p.name.to_lowercase().contains(command))
+                        .map(format_pollutant_with_name)
+                        .collect::<Vec<_>>(),
+                ),
             }.map(|res| {
                 once(format!("측정소: {}", station_address))
                     .chain(res)
                     .collect::<Vec<_>>()
             })
-        })
-        .or_else(|| Some(vec![]))
+        }).or_else(|| Some(vec![]))
 }
 
 fn search_wolfram(
@@ -203,64 +199,56 @@ fn search_wolfram_real(
         "http://api.wolframalpha.com/v1/result?appid={}&i={}&units=metric",
         wolfram_app_id, query_for_url
     ).parse::<reqwest::Url>()
+    .map_err::<Error, _>(|e| e.into())
+    .into_future()
+    .and_then(move |uri| {
+        request::Client::new(&h1)
+            .get(uri)
+            .send()
+            .map_err(|e| e.into())
+    }).and_then(|resp| {
+        resp.into_body()
+            .map_err::<Error, _>(|e| e.into())
+            .map(|chunk| stream::iter_ok::<_, Error>(chunk.into_iter()))
+            .flatten()
+            .take(300)
+            .collect()
+    }).and_then(|v| String::from_utf8(v).map_err(|e| e.into()).into_future())
+    .join(
+        format!(
+            "http://api.wolframalpha.com/v1/simple?appid={}&i={}&units=metric",
+            wolfram_app_id, query_for_url
+        ).parse::<reqwest::Url>()
         .map_err::<Error, _>(|e| e.into())
         .into_future()
         .and_then(move |uri| {
-            request::Client::new(&h1)
+            request::Client::new(&h2)
                 .get(uri)
                 .send()
                 .map_err(|e| e.into())
-        })
-        .and_then(|resp| {
+        }).and_then(|resp| {
             resp.into_body()
                 .map_err::<Error, _>(|e| e.into())
                 .map(|chunk| stream::iter_ok::<_, Error>(chunk.into_iter()))
                 .flatten()
-                .take(300)
                 .collect()
-        })
-        .and_then(|v| String::from_utf8(v).map_err(|e| e.into()).into_future())
-        .join(
-            format!(
-                "http://api.wolframalpha.com/v1/simple?appid={}&i={}&units=metric",
-                wolfram_app_id, query_for_url
-            ).parse::<reqwest::Url>()
-                .map_err::<Error, _>(|e| e.into())
-                .into_future()
-                .and_then(move |uri| {
-                    request::Client::new(&h2)
-                        .get(uri)
-                        .send()
-                        .map_err(|e| e.into())
-                })
-                .and_then(|resp| {
-                    resp.into_body()
-                        .map_err::<Error, _>(|e| e.into())
-                        .map(|chunk| stream::iter_ok::<_, Error>(chunk.into_iter()))
-                        .flatten()
-                        .collect()
-                })
-                .map(|img| base64::encode(&img))
-                .and_then(move |img| {
-                    request::Client::new(&h3)
-                        .post("https://api.imgur.com/3/image")
-                        .header(reqwest::header::Authorization(format!(
-                            "Client-ID {}",
-                            imgur_client_id
-                        )))
-                        .multipart(
-                            reqwest::multipart::Form::new()
-                                .text("image", img)
-                                .text("title", q1),
-                        )
-                        .send()
-                        .map_err(|e| e.into())
-                })
-                .and_then(|mut resp| resp.json::<ImgurResponse>().map_err(|e| e.into()))
-                .map(|resp| resp.data.link),
-        )
-        .map(move |(simple, url)| vec![q2 + " ⇒ " + &simple + " " + &url])
-        .or_else(|_| ok(vec![]))
+        }).map(|img| base64::encode(&img))
+        .and_then(move |img| {
+            request::Client::new(&h3)
+                .post("https://api.imgur.com/3/image")
+                .header(reqwest::header::Authorization(format!(
+                    "Client-ID {}",
+                    imgur_client_id
+                ))).multipart(
+                    reqwest::multipart::Form::new()
+                        .text("image", img)
+                        .text("title", q1),
+                ).send()
+                .map_err(|e| e.into())
+        }).and_then(|mut resp| resp.json::<ImgurResponse>().map_err(|e| e.into()))
+        .map(|resp| resp.data.link),
+    ).map(move |(simple, url)| vec![q2 + " ⇒ " + &simple + " " + &url])
+    .or_else(|_| ok(vec![]))
 }
 
 enum BotCommand {
@@ -290,10 +278,8 @@ impl BotCommand {
                             c.get(1).unwrap().as_str().to_owned(),
                             c.get(2).unwrap().as_str().to_owned(),
                         )
-                    })
-                    .map(|(s1, s2)| BotCommand::AirPollution(s1, s2))
-            })
-            .or_else(|| {
+                    }).map(|(s1, s2)| BotCommand::AirPollution(s1, s2))
+            }).or_else(|| {
                 join((get_wolfram_app_id!(&CONFIG), get_imgur_client_id!(&CONFIG)))
                     .and_then(|_| REGEX_WOLFRAM.captures(message))
                     .map(|c| c.get(1).unwrap().as_str().to_owned())
@@ -321,8 +307,7 @@ fn send_privmsgs(client: &IrcClient, channel: &str, msgs: Vec<String>) -> Result
             client
                 .send_privmsg(channel, &m)
                 .map_err::<Error, _>(Into::into)
-        })
-        .fold(Ok(()), |acc, res| if res.is_ok() { acc } else { res })
+        }).fold(Ok(()), |acc, res| if res.is_ok() { acc } else { res })
 }
 
 fn wolfram_future(
@@ -361,8 +346,7 @@ fn process_privmsg(
             } else {
                 v
             }
-        })
-        .unwrap_or_default();
+        }).unwrap_or_default();
     send_privmsgs(client, &channel, msgs)
 }
 
@@ -374,8 +358,7 @@ fn process_invite(client: &IrcClient, channel: &str, nickname: &str) -> Result<(
                 let mut config = Config::load(&*CONFIG_PATH).unwrap();
                 config.channels.as_mut().unwrap().push(channel.to_owned());
                 config.save(&*CONFIG_PATH)
-            })
-            .map_err(Into::into)
+            }).map_err(Into::into)
     } else {
         Ok(())
     }
@@ -387,8 +370,7 @@ fn process_kick(client: &IrcClient, channel: &str, nickname: &str) -> Result<()>
             .and_then(|mut config| {
                 config.channels.as_mut().unwrap().retain(|c| c != &channel);
                 config.save(&*CONFIG_PATH)
-            })
-            .map_err(Into::into)
+            }).map_err(Into::into)
     } else {
         Ok(())
     }
