@@ -178,6 +178,7 @@ fn search_howto(query: &str) -> Option<Vec<String>> {
                 answer
                     .instruction
                     .split("\n")
+                    .filter(|s| !s.is_empty())
                     .map(ToString::to_string)
                     .into_iter(),
             ).collect();
@@ -185,7 +186,7 @@ fn search_howto(query: &str) -> Option<Vec<String>> {
         if answer.len() > 9 {
             answer
                 .into_iter()
-                .take(8)
+                .take(5)
                 .chain(once("...(Check the link)".to_string()))
                 .collect()
         } else {
