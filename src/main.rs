@@ -173,14 +173,24 @@ fn search_wolfram(
 
 fn search_howto(query: &str) -> Option<Vec<String>> {
     howto(query).filter_map(Result::ok).next().map(|answer| {
-        once(format!("Answer from: {}", answer.link))
+        let answer: Vec<_> = once(format!("Answer from: {}", answer.link))
             .chain(
                 answer
                     .instruction
                     .split("\n")
                     .map(ToString::to_string)
                     .into_iter(),
-            ).collect::<Vec<_>>()
+            ).collect();
+
+        if answer.len() > 9 {
+            answer
+                .into_iter()
+                .take(8)
+                .chain(once("...(Check the link)".to_string()))
+                .collect()
+        } else {
+            answer
+        }
     })
 }
 
