@@ -12,6 +12,7 @@ extern crate serde;
 #[macro_use]
 extern crate serde_derive;
 extern crate failure;
+extern crate howto;
 extern crate openssl_probe;
 extern crate tokio_core;
 
@@ -20,9 +21,11 @@ use futures::future::ok;
 use futures::prelude::*;
 use futures::stream;
 use futures::sync::mpsc::{channel, Sender};
+use howto::howto;
 use irc::client::prelude::*;
 use regex::Regex;
 use reqwest::unstable::async as request;
+use std::iter::once;
 use tokio_core::reactor::Handle;
 
 use std::env::args;
@@ -102,8 +105,6 @@ fn format_pollutant_with_name(pollutant: airkorea::Pollutant) -> String {
 }
 
 fn search_dic(query: &str) -> Option<Vec<String>> {
-    use std::iter::once;
-
     daumdic::search(query).ok().map(|res| {
         let words = res.words;
         let alternatives = res.alternatives;
@@ -117,8 +118,6 @@ fn search_dic(query: &str) -> Option<Vec<String>> {
 }
 
 fn search_air(command: &str, query: &str, app_key: &str) -> Option<Vec<String>> {
-    use std::iter::once;
-
     daummap::AddressRequest::new(app_key, query)
         .get()
         .filter_map(|address| get_coord_from_address(&address))
@@ -170,6 +169,19 @@ fn search_wolfram(
         .map(|_| vec!["Wolfram|Alpha 검색 중...".to_owned()])
         .wait()
         .ok()
+}
+
+fn search_howto(query: &str) -> Option<Vec<String>> {
+    howto(query).filter_map(Result::ok).next().map(|answer| {
+        once(format!("Answer from: {}", answer.link))
+            .chain(
+                answer
+                    .instruction
+                    .split("\n")
+                    .map(ToString::to_string)
+                    .into_iter(),
+            ).collect::<Vec<_>>()
+    })
 }
 
 fn search_wolfram_real(
@@ -255,6 +267,7 @@ enum BotCommand {
     Dictionary(String),
     AirPollution(String, String),
     WolframAlpha(String),
+    HowTo(String),
 }
 
 impl BotCommand {
@@ -264,6 +277,7 @@ impl BotCommand {
             static ref REGEX_AIR: Regex =
                 Regex::new(r"^(air|pm|pm10|pm25|o3|so2|no2|co|so2) (.+)$").unwrap();
             static ref REGEX_WOLFRAM: Regex = Regex::new(r"^[wW](?:olfram)? (.+)$").unwrap();
+            static ref REGEX_HOWTO: Regex = Regex::new(r"^[hH](?:owto)? (.+)$").unwrap();
         }
 
         REGEX_DIC
@@ -284,6 +298,11 @@ impl BotCommand {
                     .and_then(|_| REGEX_WOLFRAM.captures(message))
                     .map(|c| c.get(1).unwrap().as_str().to_owned())
                     .map(|s| BotCommand::WolframAlpha(s))
+            }).or_else(|| {
+                REGEX_HOWTO
+                    .captures(message)
+                    .map(|c| c.get(1).unwrap().as_str().to_owned())
+                    .map(|s| BotCommand::HowTo(s))
             })
     }
 
@@ -297,6 +316,7 @@ impl BotCommand {
                 join((get_wolfram_app_id!(&CONFIG), get_imgur_client_id!(&CONFIG)))
                     .and_then(|_| search_wolfram(channel, &query, wolfram_tx))
             }
+            BotCommand::HowTo(query) => search_howto(&query),
         }
     }
 }
