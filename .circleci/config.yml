@@ -23,9 +23,10 @@ workflows:
 jobs:
   musl_build:
     docker:
-      - image: clux/muslrust
+      - image: clux/muslrust:1.33.0-stable
     working_directory: /volume
     steps:
+      - run: rustc --version
       - checkout
       - restore_cache:
           keys:
